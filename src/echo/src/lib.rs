@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize as S;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
-use serde_json::Serializer;
-use std::io::StdoutLock;
+use std::io::{StdoutLock, Write};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,145 +12,99 @@ pub struct Message {
     pub body: Body,
 }
 
-// impl Message {
-//     pub fn reply(&mut self)->Message{
-//         Message { src: self.dest, dest: self.src, body:  }
-//     }
-// }
-
-// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-// #[serde(untagged)]
-// struct Body {
-//     r#type: String,
-//     msg_id: Option<usize>,
-//     in_reply_to: Option<usize>,
-//     #[serde(flatten)]
-//     payload: Option<Payload>,
-// }
-//
-//
-// #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-// // #[serde(tag = "type")]
-// #[serde(rename_all = "snake_case")]
-// enum Payload {
-//     Echo { echo: String },
-//     EchoOk { echo: String },
-//     Init {
-//         node_id: String,
-//         node_ids: Vec<String>,
-//     },
-//
-// }
+impl Message {
+    pub fn send(&self, output: &mut impl Write) -> Result<(), anyhow::Error> {
+        serde_json::to_writer(&mut *output, self).context("serializing response")?;
+        output.write_all(b"\n").context("write trailing newline")?;
+        Ok(())
+    }
+    pub fn into_reply(self, payload: Body) -> Message {
+        Message {
+            src: self.src,
+            dest: self.dest,
+            body: payload,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Body {
     #[serde(rename_all = "snake_case")]
-    echo { msg_id: Option<usize>, echo: String },
+    echo { msg_id: usize, echo: String },
     #[serde(rename_all = "snake_case")]
     echo_ok {
-        msg_id: Option<usize>,
-        in_reply_to: Option<usize>,
+        msg_id: usize,
+        in_reply_to: usize,
         echo: String,
     },
     #[serde(rename_all = "snake_case")]
     init {
-        msg_id: Option<usize>,
+        msg_id: usize,
         node_id: String,
         node_ids: Vec<String>,
     },
     #[serde(rename_all = "snake_case")]
-    init_ok {
-        msg_id: Option<usize>,
-        in_reply_to: Option<usize>,
-    },
+    init_ok { in_reply_to: usize },
 }
 
 pub trait Node {
-    fn handle_message(
-        &mut self,
-        msg: Message,
-        output: &mut Serializer<StdoutLock>,
-    ) -> anyhow::Result<()>;
+    fn new() -> Self;
+    fn handle_init_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()>;
+    fn handle_echo_message(&mut self, msg: Message, output: &mut StdoutLock) -> anyhow::Result<()>;
+    fn handle_any_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+        match msg.body {
+            Body::echo { .. } => self.handle_echo_message(msg, output),
+            Body::echo_ok { .. } => unreachable!(),
+            Body::init { .. } => self.handle_init_message(msg, output),
+            Body::init_ok { .. } => unreachable!(),
+        }
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EchoNode {
-    pub id: usize,
+    pub id: String,
 }
 
 impl Node for EchoNode {
-    fn handle_message(&mut self, msg: Message, output: &mut Serializer<StdoutLock>) -> Result<()> {
-        match msg.body {
-            Body::echo { msg_id, echo } => {
-                let reply = Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Body::echo_ok {
-                        msg_id: Some(self.id),
-                        in_reply_to: msg_id,
-                        echo,
-                    },
-                };
-                reply.serialize(output)?;
-            }
-            Body::echo_ok { .. } => unreachable!("We hit EchoOk"),
-            Body::init {
-                msg_id,
-                node_id,
-                node_ids,
-            } => {
-                self.id = str::parse::<usize>(&node_id)
-                    .context("Failed to parse Maelstrom init node id string into usize")?;
-                let reply = Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Body::init_ok {
-                        msg_id: None,
-                        in_reply_to: msg_id,
-                    },
-                };
-                reply.serialize(output)?;
-            }
-            Body::init_ok { .. } => unreachable!("We hit InitOk"),
+    fn new() -> Self {
+        Self { id: String::new() }
+    }
+
+    fn handle_init_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+        if let Body::init {
+            msg_id,
+            node_ids,
+            node_id,
+        } = msg.body
+        {
+            self.id = node_id.clone();
+            let reply = Message {
+                src: node_id,
+                dest: msg.src,
+                body: Body::init_ok {
+                    in_reply_to: msg_id,
+                },
+            };
+            reply.send(output)?;
+        }
+        Ok(())
+    }
+
+    fn handle_echo_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+        if let Body::echo { msg_id, echo } = msg.body {
+            let reply = Message {
+                src: self.id.clone(),
+                dest: msg.src,
+                body: Body::echo_ok {
+                    msg_id,
+                    in_reply_to: msg_id,
+                    echo,
+                },
+            };
+            reply.send(output)?;
         }
         Ok(())
     }
 }
-
-/*
-match msg.body.payload {
-            Some(Payload::Echo { echo }) => {
-                let reply = Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Body {
-                        r#type: "echo_ok".to_string(),
-                        msg_id: Some(self.id),
-                        in_reply_to: msg.body.msg_id,
-                        payload: Some(Payload::EchoOk { echo }),
-                    },
-                };
-                reply.serialize(output)?;
-            }
-            Some(Payload::EchoOk { .. }) => unreachable!(),
-
-           Some(Payload::Init {node_id, node_ids }) =>{
-                self.id = str::parse::<usize>(&node_id).context("Failed to parse Maelstrom init node id string into usize")?;
-                let reply = Message{
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Body {
-                        r#type: "init_ok".to_string(),
-                        msg_id: None,
-                        in_reply_to: msg.body.msg_id,
-                        payload:None
-                    },
-                };
-                reply.serialize(output)?;
-            },
-            None => unreachable!(),
-        }
-
-
-*/
