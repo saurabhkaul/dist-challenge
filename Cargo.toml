@@ -8,7 +8,7 @@ edition = "2021"
 
 [workspace]
 members = [
-    "src/echo"
+    "src/node"
 ]
 
 
@@ -25,6 +25,6 @@ tokio-context = "0.1.3"
 tokio-util = "0.7.7"
 serde_derive = "1.0.192"
 anyhow = "1.0.86"
-echo = {path="src/echo"}
+node = {path="src/node"}
 serde_path_to_error = "0.1.16"
 

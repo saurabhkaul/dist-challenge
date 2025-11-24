@@ -1,5 +1,5 @@
 use anyhow::Context;
-use echo::{EchoNode, Node};
+use node::{Node, NodeTrait};
 use serde_path_to_error::deserialize;
 use std::io::{stdin, stdout, BufRead};
 
@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     let stdin = stdin().lock().lines();
     let mut stdout = stdout().lock();
 
-    let mut echo_node = EchoNode { id: String::new() };
+    let mut node = Node { id: String::new(), msg_id: Default::default(), node_ids: Default::default() };
 
     // eprintln!("Waiting for input...");
     for line in stdin {
@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
                 return Err(e).context("Failed to deserialize STDIN input from Maelstrom");
             }
         };
-        match echo_node.handle_any_message(input, &mut stdout) {
+        match node.next(input, &mut stdout) {
             Ok(_) => eprintln!("Message handled successfully"),
             Err(e) => eprintln!("Failed to handle message: {}", e),
         }
