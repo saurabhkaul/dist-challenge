@@ -1,9 +1,9 @@
 use anyhow::Ok;
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 use std::collections::HashMap;
-use std::io::{StdoutLock, Write};
+use std::sync::mpsc::Sender;
 use ulid::Ulid;
 
 
@@ -16,10 +16,8 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn send(&self, output: &mut impl Write) -> Result<(), anyhow::Error> {
-        eprintln!("Sending: src={}, dest={}", self.src, self.dest);
-        serde_json::to_writer(&mut *output, self).context("serializing response")?;
-        output.write_all(b"\n").context("write trailing newline")?;
+    pub fn send(self, tx: Sender<Message>) -> Result<(), anyhow::Error> {
+        tx.send(self)?;
         Ok(())
     }
     pub fn into_reply(self, payload: MessageBody) -> Message {
@@ -96,21 +94,21 @@ pub enum MessageBody {
 
 pub trait NodeTrait {
     fn new() -> Self;
-    fn handle_init_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()>;
-    fn handle_echo_message(&mut self, msg: Message, output: &mut StdoutLock) -> anyhow::Result<()>;
-    fn handle_generate_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()>;
-    fn handle_broadcast_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()>;
-    fn handle_read_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()>;
-    fn handle_topology_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()>;
+    fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+    fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> anyhow::Result<()>;
+    fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+    fn handle_broadcast_message(&mut self, msg: Message,tx: Sender<Message>) -> Result<()>;
+    fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+    fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn get_and_increment_msg_id(&mut self) -> u32;
-    fn next(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         match msg.body {
-            MessageBody::echo { .. } => self.handle_echo_message(msg, output),
-            MessageBody::init { .. } => self.handle_init_message(msg, output),
-            MessageBody::generate { .. } => self.handle_generate_message(msg, output),
-            MessageBody::broadcast { .. } => self.handle_broadcast_message(msg, output),
-            MessageBody::topology { .. } => self.handle_topology_message(msg, output),
-            MessageBody::read { .. } => self.handle_read_message(msg,output),
+            MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
+            MessageBody::init { .. } => self.handle_init_message(msg, tx),
+            MessageBody::generate { .. } => self.handle_generate_message(msg, tx),
+            MessageBody::broadcast { .. } => self.handle_broadcast_message(msg, tx),
+            MessageBody::topology { .. } => self.handle_topology_message(msg, tx),
+            MessageBody::read { .. } => self.handle_read_message(msg,tx),
             _ => unreachable!()
         }
     }
@@ -153,7 +151,7 @@ where
         }
     }
     // }
-    fn handle_init_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::init {
             msg_id,
             node_ids,
@@ -169,13 +167,13 @@ where
                     in_reply_to: msg_id,
                 },
             };
-            reply.send(output)?;
+            reply.send(tx)?;
         }
         Ok(())
     }
     // fn into_reply(self,mut msg:MessageBody,&mut StdoutLock){
 
-    fn handle_echo_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::echo { msg_id, ref echo } = msg.body {
             let payload = MessageBody::echo_ok {
                 msg_id: self.get_and_increment_msg_id(),
@@ -183,12 +181,12 @@ where
                 echo: echo.clone(),
             };
             let reply = msg.into_reply(payload);
-            reply.send(output)?;
+            reply.send(tx)?;
         }
         Ok(())
     }
 
-    fn handle_generate_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::generate { msg_id } = msg.body {
             let unique_id = Ulid::new().to_string();
             let payload = MessageBody::generate_ok {
@@ -197,35 +195,35 @@ where
                 id: unique_id,
             };
             let reply = msg.into_reply(payload);
-            reply.send(output)?;
+            reply.send(tx)?;
         }
         Ok(())
     }
-    fn handle_broadcast_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::broadcast { message, msg_id } = msg.body{
             self.store.push(Data::from(message));
             let payload = MessageBody::broadcast_ok { in_reply_to: msg_id, msg_id:self.get_and_increment_msg_id()};
             let reply = msg.into_reply(payload);
-            reply.send(output)?;
+            reply.send(tx)?;
         }
         
         Ok(())
     }
-    fn handle_read_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::read { msg_id } = msg.body{
             let messages:Vec<u32> = self.store.clone().into_iter().map(Into::into).collect();
             let payload = MessageBody::read_ok { messages, in_reply_to: msg_id,msg_id:self.get_and_increment_msg_id() };
             let reply = msg.into_reply(payload);
-            reply.send(output)?;
+            reply.send(tx)?;
         }
         Ok(())
     }
-    fn handle_topology_message(&mut self, msg: Message, output: &mut StdoutLock) -> Result<()> {
+    fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::topology { ref topology, msg_id } = msg.body{
             self.topology = topology.clone();
             let payload = MessageBody::topology_ok { msg_id: self.get_and_increment_msg_id(), in_reply_to: msg_id};
             let reply = msg.into_reply(payload);
-            reply.send(output)?;
+            reply.send(tx)?;
         }
         Ok(())
     }

@@ -1,13 +1,22 @@
 use anyhow::Context;
-use node::{Node, NodeTrait};
+use node::{Node, NodeTrait,Message};
 use serde_path_to_error::deserialize;
-use std::io::{stdin, stdout, BufRead};
+use std::{io::{BufRead, stdin, stdout,Write}, sync::mpsc, thread};
+
 
 fn main() -> anyhow::Result<()> {
     let stdin = stdin().lock().lines();
-    let mut stdout = stdout().lock();
-
     let mut node: Node<u32> = Node::default();
+    let (tx,rx) = mpsc::channel::<Message>();
+    
+    let print_thread_handle = thread::spawn(move ||{
+        let mut stdout = stdout().lock();
+        while let Ok(message) = rx.recv(){
+            eprintln!("Sending: src={}, dest={}", message.src, message.dest);
+            let _ = serde_json::to_writer(&mut stdout, &message).context("serializing response");
+            let _ = stdout.write_all(b"\n").context("write trailing newline").context("Couldn't write to stdout");
+        }
+    });
 
     // eprintln!("Waiting for input...");
     for line in stdin {
@@ -31,11 +40,11 @@ fn main() -> anyhow::Result<()> {
                 return Err(e).context("Failed to deserialize STDIN input from Maelstrom");
             }
         };
-        match node.next(input, &mut stdout) {
+        match node.next(input,tx.clone()) {
             Ok(_) => eprintln!("Message handled successfully"),
             Err(e) => eprintln!("Failed to handle message: {}", e),
         }
     }
-
+    print_thread_handle.join();
     Ok(())
 }
