@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     let stdin = stdin().lock().lines();
     let mut stdout = stdout().lock();
 
-    let mut node = Node { id: String::new(), msg_id: Default::default(), node_ids: Default::default() };
+    let mut node: Node<u32> = Node::default();
 
     // eprintln!("Waiting for input...");
     for line in stdin {
