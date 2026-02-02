@@ -27,6 +27,13 @@ impl Message {
             body: payload,
         }
     }
+    pub fn into_message(self, payload: MessageBody,new_dest:&str)  -> Message {
+        Message{
+            src: self.dest,
+            dest: new_dest.to_owned(),
+            body: payload,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -109,6 +116,10 @@ pub trait NodeTrait {
             MessageBody::broadcast { .. } => self.handle_broadcast_message(msg, tx),
             MessageBody::topology { .. } => self.handle_topology_message(msg, tx),
             MessageBody::read { .. } => self.handle_read_message(msg,tx),
+            MessageBody::broadcast_ok { .. } => {
+                //Do nothing, we know our fanout message was successful
+                Ok(())
+            }
             _ => unreachable!()
         }
     }
@@ -116,16 +127,31 @@ pub trait NodeTrait {
 
 
 
-#[derive(Clone)]
-pub struct Node<Data> {
+#[derive(Clone,PartialEq,Eq)]
+pub struct Node<MsgId,Data> {
     pub id: String,
     pub msg_id: u32,
     pub node_ids: Vec<String>,
-    pub store:Vec<Data>,
+    pub store:Vec<(MsgId,Data)>,
     pub topology : HashMap<String,Vec<String>>
 }
 
-impl<Data> Default for Node<Data>{
+impl<MsgId,Data> Node<MsgId,Data> 
+where
+    MsgId: PartialEq,
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32>,
+{
+    fn check_and_push_to_store(&mut self,payload:(MsgId,Data)){
+        if !self.store.contains(&payload){
+            self.store.push(payload);
+        }
+    }
+    fn read(&self)->Vec<u32>{
+        self.store.iter().map(|(_id,data)|data.clone().into()).collect()
+    }
+}
+
+impl<MsgId,Data> Default for Node<MsgId,Data>{
     fn default() -> Self {
         Self {
             id: Default::default(),
@@ -137,9 +163,16 @@ impl<Data> Default for Node<Data>{
     }
 }
 
-impl <Data> NodeTrait for Node<Data>
+// impl<MsgId: PartialEq, Data: PartialEq> PartialEq for Node<MsgId, Data> {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.first == other.first && self.second == other.second
+//     }
+// }
+
+impl <MsgId,Data> NodeTrait for Node<MsgId,Data>
 where 
-    Data:From<u32> + Clone + Into<u32>
+    Data:PartialEq + Clone + Copy + From<u32> + Into<u32>,
+    MsgId:From<u32> + Clone + Into<u32> + PartialEq
 {
     fn new() -> Self {
         Self {
@@ -150,7 +183,6 @@ where
             topology: HashMap::new(),
         }
     }
-    // }
     fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::init {
             msg_id,
@@ -201,17 +233,32 @@ where
     }
     fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::broadcast { message, msg_id } = msg.body{
-            self.store.push(Data::from(message));
-            let payload = MessageBody::broadcast_ok { in_reply_to: msg_id, msg_id:self.get_and_increment_msg_id()};
-            let reply = msg.into_reply(payload);
-            reply.send(tx)?;
+            self.check_and_push_to_store((MsgId::from(msg_id),Data::from(message)));
+            let reply_payload = MessageBody::broadcast_ok { in_reply_to: msg_id, msg_id:self.get_and_increment_msg_id()};
+            let reply = msg.into_reply(reply_payload);
+            reply.send(tx.clone())?;
+            
+            
+            let neighbours:Option<&Vec<String>> = self.topology.get(&self.id);
+            if let Some(neighbours) = neighbours{
+                let fanout_messages:Vec<Message> = neighbours.iter().map(|node_id|{
+                    Message{
+                        src: self.id.clone(),
+                        dest: node_id.to_owned(),
+                        body: MessageBody::broadcast { message, msg_id },
+                    }
+                }).collect();
+                for msg in fanout_messages{
+                    msg.send(tx.clone())?;
+                }
+            }
+            
         }
-        
         Ok(())
     }
     fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::read { msg_id } = msg.body{
-            let messages:Vec<u32> = self.store.clone().into_iter().map(Into::into).collect();
+            let messages:Vec<u32> = self.read();
             let payload = MessageBody::read_ok { messages, in_reply_to: msg_id,msg_id:self.get_and_increment_msg_id() };
             let reply = msg.into_reply(payload);
             reply.send(tx)?;
@@ -227,7 +274,6 @@ where
         }
         Ok(())
     }
-
     fn get_and_increment_msg_id(&mut self) -> u32 {
         let id = self.msg_id;
         self.msg_id += 1;

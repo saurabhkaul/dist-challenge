@@ -6,7 +6,7 @@ use std::{io::{BufRead, stdin, stdout,Write}, sync::mpsc, thread};
 
 fn main() -> anyhow::Result<()> {
     let stdin = stdin().lock().lines();
-    let mut node: Node<u32> = Node::default();
+    let mut node: Node<u32,u32> = Node::default();
     let (tx,rx) = mpsc::channel::<Message>();
     
     let print_thread_handle = thread::spawn(move ||{
@@ -45,6 +45,6 @@ fn main() -> anyhow::Result<()> {
             Err(e) => eprintln!("Failed to handle message: {}", e),
         }
     }
-    print_thread_handle.join();
+    let _ = print_thread_handle.join();
     Ok(())
 }
