@@ -132,18 +132,22 @@ pub struct Node<MsgId,Data> {
     pub id: String,
     pub msg_id: u32,
     pub node_ids: Vec<String>,
+    //MsgId here helps us track the data we store vis a vis successive messages 
     pub store:Vec<(MsgId,Data)>,
     pub topology : HashMap<String,Vec<String>>
 }
 
 impl<MsgId,Data> Node<MsgId,Data> 
 where
-    MsgId: PartialEq,
+    MsgId: PartialEq + Clone,
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32>,
 {
-    fn check_and_push_to_store(&mut self,payload:(MsgId,Data)){
+    fn check_and_push_to_store(&mut self,payload:(MsgId,Data))->Option<(MsgId,Data)>{
         if !self.store.contains(&payload){
-            self.store.push(payload);
+            self.store.push(payload.clone());
+            Some(payload)
+        }else {
+            None
         }
     }
     fn read(&self)->Vec<u32>{
@@ -163,11 +167,6 @@ impl<MsgId,Data> Default for Node<MsgId,Data>{
     }
 }
 
-// impl<MsgId: PartialEq, Data: PartialEq> PartialEq for Node<MsgId, Data> {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.first == other.first && self.second == other.second
-//     }
-// }
 
 impl <MsgId,Data> NodeTrait for Node<MsgId,Data>
 where 
@@ -233,15 +232,16 @@ where
     }
     fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::broadcast { message, msg_id } = msg.body{
-            self.check_and_push_to_store((MsgId::from(msg_id),Data::from(message)));
+        //Check and see if we have received the message before, only gossip if its a new message
+        if let Some((_id,_data)) = self.check_and_push_to_store((MsgId::from(msg_id),Data::from(message))) {
             let reply_payload = MessageBody::broadcast_ok { in_reply_to: msg_id, msg_id:self.get_and_increment_msg_id()};
-            let reply = msg.into_reply(reply_payload);
+            let reply = msg.clone().into_reply(reply_payload);
             reply.send(tx.clone())?;
             
-            
+            //Send the new message to our neighbours in the topology
             let neighbours:Option<&Vec<String>> = self.topology.get(&self.id);
             if let Some(neighbours) = neighbours{
-                let fanout_messages:Vec<Message> = neighbours.iter().map(|node_id|{
+                let fanout_messages:Vec<Message> = neighbours.iter().filter(|n|**n != msg.src).map(|node_id|{
                     Message{
                         src: self.id.clone(),
                         dest: node_id.to_owned(),
@@ -252,7 +252,7 @@ where
                     msg.send(tx.clone())?;
                 }
             }
-            
+        };
         }
         Ok(())
     }
