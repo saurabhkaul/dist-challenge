@@ -1,9 +1,11 @@
 use anyhow::Ok;
 use anyhow::{Result};
+use rand::seq::IndexedRandom;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
+use std::hash::Hash;
 use ulid::Ulid;
 
 
@@ -96,6 +98,16 @@ pub enum MessageBody {
     init_ok {
         in_reply_to: u32,
     },
+    //Custom messages not part of the protocol
+    sync{
+        msg_id: u32,
+        messages: Vec<u32>
+    },
+    sync_ok{
+        msg_id:u32,
+        in_reply_to:u32,
+        messages:Vec<u32>
+    },
    
 }
 
@@ -108,6 +120,8 @@ pub trait NodeTrait {
     fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn get_and_increment_msg_id(&mut self) -> u32;
+    fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>)->Result<()>;
+    fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>)->Result<()>;
     fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         match msg.body {
             MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
@@ -120,6 +134,9 @@ pub trait NodeTrait {
                 //Do nothing, we know our fanout message was successful
                 Ok(())
             }
+            MessageBody::sync { .. } => self.handle_sync_message(msg, tx),
+            MessageBody::sync_ok { .. } => self.handle_sync_ok_message(msg, tx),
+            
             _ => unreachable!()
         }
     }
@@ -127,59 +144,78 @@ pub trait NodeTrait {
 
 
 
-#[derive(Clone,PartialEq,Eq)]
-pub struct Node<MsgId,Data> {
+#[derive(Clone)]
+pub struct Node<Data> {
     pub id: String,
     pub msg_id: u32,
     pub node_ids: Vec<String>,
-    //MsgId here helps us track the data we store vis a vis successive messages 
-    pub store:Vec<(MsgId,Data)>,
-    pub topology : HashMap<String,Vec<String>>
+    pub store:HashSet<Data>,
+    pub topology : HashMap<String,Vec<String>>,
+    pub outbox:HashMap<String,Vec<Message>>
 }
 
-impl<MsgId,Data> Node<MsgId,Data> 
+impl<Data> Node<Data> 
 where
-    MsgId: PartialEq + Clone,
-    Data: PartialEq + Clone + Copy + From<u32> + Into<u32>,
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Eq + Hash,
 {
-    fn check_and_push_to_store(&mut self,payload:(MsgId,Data))->Option<(MsgId,Data)>{
+    fn check_and_push_to_store(&mut self,payload:Data)->Option<Data>{
         if !self.store.contains(&payload){
-            self.store.push(payload.clone());
+            self.store.insert(payload.clone());
             Some(payload)
         }else {
             None
         }
     }
     fn read(&self)->Vec<u32>{
-        self.store.iter().map(|(_id,data)|data.clone().into()).collect()
+        self.store.iter().map(|data|data.clone().into()).collect()
+    }
+    // To combat network partitions, a node calls this function to pick random 
+    // nodes for their messages,while it sends its own. Once we get theirs we can
+    // copy values we dont have, while they can copy values from us
+    // This function acts as a initiator for the sync process, piggybacking on 
+    // maelstroms messaging protocol, by injecting custom message types.
+    fn request_sync_with_random_peers(&mut self)->Vec<Message>{
+        let all_nodes:Vec<String> = self.node_ids.clone();
+        let mut rng = rand::rng();
+        let messages = all_nodes.choose_multiple(&mut rng, 2).map(|node|{
+            Message{
+                src: self.id.clone(),
+                dest: node.to_owned(),
+                body: MessageBody::sync { msg_id:self.get_and_increment_msg_id(), messages: self.read()},
+            }  
+            
+        }).collect();
+        messages
+        
     }
 }
 
-impl<MsgId,Data> Default for Node<MsgId,Data>{
+impl<Data> Default for Node<Data>{
     fn default() -> Self {
         Self {
             id: Default::default(),
             msg_id: Default::default(),
             node_ids: Default::default(),
-            store: Vec::new(),
+            store: HashSet::new(),
             topology: HashMap::new(),
+            outbox:HashMap::new(),
         }
     }
 }
 
 
-impl <MsgId,Data> NodeTrait for Node<MsgId,Data>
+impl <Data> NodeTrait for Node<Data>
 where 
-    Data:PartialEq + Clone + Copy + From<u32> + Into<u32>,
-    MsgId:From<u32> + Clone + Into<u32> + PartialEq
+    Data:PartialEq + Clone + Copy + From<u32> + Into<u32>+ Hash+Eq,
 {
     fn new() -> Self {
         Self {
             id: String::new(),
             msg_id: 0,
             node_ids: vec![],
-            store: Vec::new(),
+            store: HashSet::new(),
             topology: HashMap::new(),
+            outbox: HashMap::new(),
         }
     }
     fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
@@ -233,7 +269,7 @@ where
     fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         if let MessageBody::broadcast { message, msg_id } = msg.body{
         //Check and see if we have received the message before, only gossip if its a new message
-        if let Some((_id,_data)) = self.check_and_push_to_store((MsgId::from(msg_id),Data::from(message))) {
+        if let Some(_data) = self.check_and_push_to_store(Data::from(message)) {
             let reply_payload = MessageBody::broadcast_ok { in_reply_to: msg_id, msg_id:self.get_and_increment_msg_id()};
             let reply = msg.clone().into_reply(reply_payload);
             reply.send(tx.clone())?;
@@ -278,6 +314,14 @@ where
         let id = self.msg_id;
         self.msg_id += 1;
         id
+    }
+
+    fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>)->Result<()> {
+        todo!()
+    }
+
+    fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>)->Result<()> {
+        todo!()
     }
  
 }

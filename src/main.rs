@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    // eprintln!("Waiting for input...");
+    
     for line in stdin {
         let input = match line {
             Ok(l) => {
@@ -27,12 +27,10 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => panic!("{e}"),
         };
-        // eprintln!("Attempting to deserialize: {}", input);
         let deser = &mut serde_json::Deserializer::from_str(&input);
         let result = deserialize(deser);
         let input = match result {
             Ok(msg) => {
-                // eprintln!("Successfully deserialized message: {:?}", msg);
                 msg
             }
             Err(e) => {

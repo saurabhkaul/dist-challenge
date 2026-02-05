@@ -17,4 +17,5 @@ tokio-util = "0.7.7"
 serde_derive = "1.0.192"
 anyhow = "1.0.86"
 ulid = "1.2.1"
+rand = "0.9.2"
 
