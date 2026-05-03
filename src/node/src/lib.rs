@@ -1,5 +1,7 @@
 mod broadcast;
 mod echo;
+#[cfg(test)]
+mod tests;
 mod unique_id;
 
 use anyhow::Ok;
@@ -108,6 +110,13 @@ pub enum MessageBody {
         in_reply_to: u32,
         messages: Vec<u32>,
     },
+    bulk {
+        msg_id: u32,
+        messages: Vec<Message>,
+    },
+    bulk_ok {
+        in_reply_to: u32,
+    },
 }
 
 impl MessageBody {
@@ -153,6 +162,8 @@ impl MessageBody {
                 in_reply_to,
                 messages,
             } => msg_id,
+            MessageBody::bulk { msg_id, messages } => msg_id,
+            MessageBody::bulk_ok { in_reply_to } => todo!(),
         }
     }
 }
@@ -166,11 +177,13 @@ pub trait NodeTrait {
     fn handle_broadcast_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn get_and_increment_msg_id(&mut self) -> u32;
+    fn get_and_increment_msg_id(&self) -> u32;
     fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn request_sync_with_random_peers(&mut self) -> Vec<Message>;
     fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()>;
+    fn handle_bulk_messages(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+    fn handle_bulk_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         match msg.body {
             MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
@@ -182,8 +195,13 @@ pub trait NodeTrait {
             MessageBody::broadcast_ok { .. } => self.handle_broadcast_ok_message(msg, tx),
             MessageBody::sync { .. } => self.handle_sync_message(msg, tx),
             MessageBody::sync_ok { .. } => self.handle_sync_ok_message(msg, tx),
-
-            _ => unreachable!(),
+            MessageBody::bulk { .. } => self.handle_bulk_messages(msg, tx),
+            MessageBody::bulk_ok { .. } => self.handle_bulk_ok_message(msg, tx),
+            MessageBody::init_ok { .. }
+            | MessageBody::topology_ok { .. }
+            | MessageBody::read_ok { .. }
+            | MessageBody::generate_ok { .. }
+            | MessageBody::echo_ok { .. } => unreachable!(),
         }
     }
 }
@@ -191,7 +209,6 @@ pub trait NodeTrait {
 #[derive(Clone)]
 pub struct Node<Data> {
     pub id: String,
-    pub msg_id: u32,
     pub node_ids: Vec<String>,
     pub store: HashSet<Data>,
     pub topology: HashMap<String, Vec<String>>,
@@ -215,7 +232,7 @@ where
         self.store.iter().map(|data| data.clone().into()).collect()
     }
     pub(crate) fn add_to_outbox(&mut self, msg: &Message) -> Result<()> {
-        let node_id = msg.src.clone();
+        let node_id = msg.dest.clone();
         self.outbox.entry(node_id).or_default().push(msg.clone());
         Ok(())
     }
@@ -227,13 +244,26 @@ where
         }
         Ok(())
     }
+
+    //remove all messages for a node in the outbox, to be used when we get an ack for a bulk message
+    pub(crate) fn remove_all_from_outbox(&mut self, node_id: String) -> Result<()> {
+        if let Some(node_outbox) = self.outbox.get_mut(&node_id) {
+            node_outbox.clear();
+        }
+        Ok(())
+    }
+    // pub(crate) fn get_outbox_messages(&self, node_id: String) -> Option<&Vec<Message>> {
+    //     if let Some(outbox) = self.outbox.get(&node_id) {
+    //         return Some(outbox);
+    //     }
+    //     return None;
+    // }
 }
 
 impl<Data> Default for Node<Data> {
     fn default() -> Self {
         Self {
             id: Default::default(),
-            msg_id: Default::default(),
             node_ids: Default::default(),
             store: HashSet::new(),
             topology: HashMap::new(),
@@ -249,7 +279,6 @@ where
     fn new() -> Self {
         Self {
             id: String::new(),
-            msg_id: 0,
             node_ids: vec![],
             store: HashSet::new(),
             topology: HashMap::new(),
@@ -297,10 +326,8 @@ where
         broadcast::handle_topology_message(self, msg, tx)
     }
 
-    fn get_and_increment_msg_id(&mut self) -> u32 {
-        let id = self.msg_id;
-        self.msg_id += 1;
-        id
+    fn get_and_increment_msg_id(&self) -> u32 {
+        unique_id::generate_message_id()
     }
 
     fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
@@ -321,5 +348,13 @@ where
 
     fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()> {
         broadcast::retry_messages(self, tx)
+    }
+
+    fn handle_bulk_messages(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        broadcast::handle_bulk_message(self, msg, tx)
+    }
+
+    fn handle_bulk_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        broadcast::handle_bulk_ok_message(self, msg, tx)
     }
 }

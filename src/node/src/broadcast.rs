@@ -15,34 +15,38 @@ where
     Node<Data>: NodeTrait,
 {
     if let MessageBody::broadcast { message, msg_id } = msg.body {
-        //Check and see if we have received the message before, only gossip if its a new message
-        if let Some(_data) = node.check_and_push_to_store(Data::from(message)) {
-            let reply_payload = MessageBody::broadcast_ok {
-                in_reply_to: msg_id,
-                msg_id: node.get_and_increment_msg_id(),
-            };
-            let reply = msg.clone().into_reply(reply_payload);
-            reply.send(tx.clone())?;
+        // If we've seen this message before, drop it silently
+        if node.check_and_push_to_store(Data::from(message)).is_none() {
+            return Ok(());
+        }
 
-            //Send the new message to our neighbours in the topology,
-            // and also add them to our outbox so that we can retry later
-            let neighbours: Option<&Vec<String>> = node.topology.get(&node.id);
-            if let Some(neighbours) = neighbours {
-                let fanout_messages: Vec<Message> = neighbours
-                    .iter()
-                    .filter(|n| **n != msg.src)
-                    .map(|node_id| Message {
-                        src: node.id.clone(),
-                        dest: node_id.to_owned(),
-                        body: MessageBody::broadcast { message, msg_id },
-                    })
-                    .collect();
-                for msg in fanout_messages {
-                    node.add_to_outbox(&msg)?;
-                    msg.send(tx.clone())?;
-                }
+        // New message: fan out to neighbours and ack
+        let neighbours: Option<&Vec<String>> = node.topology.get(&node.id);
+        if let Some(neighbours) = neighbours {
+            let fanout_messages: Vec<Message> = neighbours
+                .iter()
+                .filter(|n| **n != msg.src)
+                .take(2)
+                .map(|neighbour_node_id| Message {
+                    src: node.id.clone(),
+                    dest: neighbour_node_id.to_owned(),
+                    body: MessageBody::broadcast {
+                        message,
+                        msg_id: node.get_and_increment_msg_id(),
+                    },
+                })
+                .collect();
+            for msg in fanout_messages {
+                node.add_to_outbox(&msg)?;
+                msg.send(tx.clone())?;
             }
+        }
+
+        let reply_payload = MessageBody::broadcast_ok {
+            in_reply_to: msg_id,
+            msg_id: node.get_and_increment_msg_id(),
         };
+        msg.into_reply(reply_payload).send(tx)?;
     }
     Ok(())
 }
@@ -192,14 +196,72 @@ where
     Ok(())
 }
 
-pub fn retry_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
+pub fn handle_bulk_message<Data>(
+    node: &mut Node<Data>,
+    msg: Message,
+    tx: Sender<Message>,
+) -> Result<()>
+where
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
+    Node<Data>: NodeTrait,
+{
+    let src = msg.src.clone();
+    if let MessageBody::bulk { msg_id, messages } = msg.body {
+        for inner_msg in messages {
+            node.next(inner_msg, tx.clone())?;
+        }
+
+        Message {
+            src: node.id.clone(),
+            dest: src,
+            body: MessageBody::bulk_ok {
+                in_reply_to: msg_id,
+            },
+        }
+        .send(tx)?;
+    }
+
+    Ok(())
+}
+
+pub fn handle_bulk_ok_message<Data>(
+    node: &mut Node<Data>,
+    msg: Message,
+    _tx: Sender<Message>,
+) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
-    for n in node.outbox.keys() {
-        for msg in node.outbox.get(n).unwrap().iter() {
-            msg.clone().send(tx.clone())?
-        }
+    if let MessageBody::bulk_ok { .. } = msg.body {
+        node.remove_all_from_outbox(msg.src)?;
     }
+
+    Ok(())
+}
+
+//We do bulk retries
+pub fn retry_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
+where
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
+    Node<Data>: NodeTrait,
+{
+    let retries: Vec<Message> = node
+        .outbox
+        .iter()
+        .filter(|(_, messages)| !messages.is_empty())
+        .map(|(node_id, messages)| Message {
+            src: node.id.clone(),
+            dest: node_id.clone(),
+            body: MessageBody::bulk {
+                msg_id: node.get_and_increment_msg_id(),
+                messages: messages.clone(),
+            },
+        })
+        .collect();
+
+    for retry in retries {
+        retry.send(tx.clone())?;
+    }
+
     Ok(())
 }

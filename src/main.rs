@@ -5,6 +5,7 @@ use std::{
     io::{stdin, stdout, BufRead, Lines, Write},
     sync::mpsc,
     thread,
+    time::{Duration, Instant},
 };
 
 fn main() -> anyhow::Result<()> {
@@ -42,10 +43,12 @@ fn main_loop(
     tx: &mpsc::Sender<Message>,
     periodic: impl Fn(&mut Node<u32>, &mpsc::Sender<Message>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    for (msg_num, line) in stdin.enumerate() {
-        // Trigger every 50th iteration
-        if (msg_num + 1) % 50 == 0 {
+    let interval = Duration::from_millis(50);
+    let mut last_periodic = Instant::now();
+    for (_msg_num, line) in stdin.enumerate() {
+        if last_periodic.elapsed() >= interval {
             periodic(node, tx)?;
+            last_periodic = Instant::now();
         };
         let input = match line {
             Ok(l) => {
