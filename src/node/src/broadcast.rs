@@ -15,8 +15,8 @@ where
     Node<Data>: NodeTrait,
 {
     if let MessageBody::broadcast { message, msg_id } = msg.body {
-        // If we've seen this message before, drop it silently
-        if node.check_and_push_to_store(Data::from(message)).is_none() {
+        // If we've seen this message before, drop it silently, otherwise insert it to store
+        if node.insert_if_absent(Data::from(message)).is_none() {
             return Ok(());
         }
 
@@ -37,8 +37,8 @@ where
                 })
                 .collect();
             for msg in fanout_messages {
-                node.add_to_outbox(&msg)?;
-                msg.send(tx.clone())?;
+                node.add_to_outbox(crate::OutboxKind::FanoutMsg, &msg)?;
+                node.add_to_outbox(crate::OutboxKind::RetryMsg, &msg)?;
             }
         }
 
@@ -191,7 +191,7 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
     if let MessageBody::broadcast_ok { in_reply_to, .. } = msg.body {
-        node.remove_from_outbox(msg.src, &in_reply_to)?
+        node.remove_from_outbox(crate::OutboxKind::RetryMsg, &msg.src, &in_reply_to)?
     }
     Ok(())
 }
@@ -246,7 +246,7 @@ where
     Node<Data>: NodeTrait,
 {
     let retries: Vec<Message> = node
-        .outbox
+        .retry_outbox
         .iter()
         .filter(|(_, messages)| !messages.is_empty())
         .map(|(node_id, messages)| Message {
@@ -261,6 +261,33 @@ where
 
     for retry in retries {
         retry.send(tx.clone())?;
+    }
+
+    Ok(())
+}
+
+//We do bulk fanouts
+pub fn fanout_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
+where
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
+    Node<Data>: NodeTrait,
+{
+    let pending: Vec<(String, Vec<Message>)> = node.msg_outbox.drain().collect();
+    let fanouts: Vec<Message> = pending
+        .iter()
+        .filter(|(_, messages)| !messages.is_empty())
+        .map(|(node_id, messages)| Message {
+            src: node.id.clone(),
+            dest: node_id.to_owned(),
+            body: MessageBody::bulk {
+                msg_id: node.get_and_increment_msg_id(),
+                messages:messages.to_owned(),
+            },
+        })
+        .collect();
+
+    for bulk_msg in fanouts {
+        bulk_msg.send(tx.clone())?;
     }
 
     Ok(())

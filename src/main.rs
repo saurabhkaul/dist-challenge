@@ -24,15 +24,14 @@ fn main() -> anyhow::Result<()> {
         }
     });
     let lines = stdin().lock().lines();
-    main_loop(lines, &mut node, &tx, |node, tx| {
-        node.retry_messages(tx.clone())
-    })?;
+    main_loop(lines, &mut node, &tx, true)?;
 
     //trigger one final resend
+    node.fanout_messages(tx.clone())?;
     node.retry_messages(tx.clone())?;
 
     let lines = stdin().lock().lines();
-    main_loop(lines, &mut node, &tx, |_node, _tx| Ok(()))?;
+    main_loop(lines, &mut node, &tx, false)?;
     let _ = print_thread_handle.join();
     Ok(())
 }
@@ -41,15 +40,26 @@ fn main_loop(
     stdin: Lines<std::io::StdinLock<'_>>,
     node: &mut Node<u32>,
     tx: &mpsc::Sender<Message>,
-    periodic: impl Fn(&mut Node<u32>, &mpsc::Sender<Message>) -> anyhow::Result<()>,
+    run_periodic: bool,
 ) -> anyhow::Result<()> {
-    let interval = Duration::from_millis(50);
-    let mut last_periodic = Instant::now();
+    let fanout_interval = Duration::from_millis(25);
+    let retry_interval = Duration::from_millis(50);
+    let mut last_fanout = Instant::now();
+    let mut last_retry = Instant::now();
+
     for (_msg_num, line) in stdin.enumerate() {
-        if last_periodic.elapsed() >= interval {
-            periodic(node, tx)?;
-            last_periodic = Instant::now();
-        };
+        if run_periodic {
+            if last_fanout.elapsed() >= fanout_interval {
+                node.fanout_messages(tx.clone())?;
+                last_fanout = Instant::now();
+            }
+
+            if last_retry.elapsed() >= retry_interval {
+                node.retry_messages(tx.clone())?;
+                last_retry = Instant::now();
+            }
+        }
+
         let input = match line {
             Ok(l) => {
                 eprintln!("Received line: '{}'", l);

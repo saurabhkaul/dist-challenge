@@ -162,8 +162,13 @@ impl MessageBody {
                 in_reply_to,
                 messages,
             } => msg_id,
-            MessageBody::bulk { msg_id, messages } => msg_id,
-            MessageBody::bulk_ok { in_reply_to } => todo!(),
+            MessageBody::bulk {
+                msg_id,
+                messages: _messages,
+            } => msg_id,
+            MessageBody::bulk_ok {
+                in_reply_to: _in_reply_to,
+            } => todo!(),
         }
     }
 }
@@ -182,6 +187,7 @@ pub trait NodeTrait {
     fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn request_sync_with_random_peers(&mut self) -> Vec<Message>;
     fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()>;
+    fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()>;
     fn handle_bulk_messages(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_bulk_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
@@ -206,13 +212,23 @@ pub trait NodeTrait {
     }
 }
 
+type Outbox = HashMap<String, Vec<Message>>;
+#[derive(Debug, Clone, Copy)]
+pub enum OutboxKind {
+    RetryMsg,
+    FanoutMsg,
+}
+
 #[derive(Clone)]
 pub struct Node<Data> {
     pub id: String,
     pub node_ids: Vec<String>,
     pub store: HashSet<Data>,
     pub topology: HashMap<String, Vec<String>>,
-    pub outbox: HashMap<String, Vec<Message>>,
+    //We track our retries here
+    pub retry_outbox: Outbox,
+    //We collect fanout messages we have to send for each node, and send in one go
+    pub msg_outbox: Outbox,
 }
 
 impl<Data> Node<Data>
@@ -220,7 +236,7 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Eq + Hash,
     Self: NodeTrait,
 {
-    pub(crate) fn check_and_push_to_store(&mut self, payload: Data) -> Option<Data> {
+    pub(crate) fn insert_if_absent(&mut self, payload: Data) -> Option<Data> {
         if !self.store.contains(&payload) {
             self.store.insert(payload.clone());
             Some(payload)
@@ -231,33 +247,44 @@ where
     pub(crate) fn read(&self) -> Vec<u32> {
         self.store.iter().map(|data| data.clone().into()).collect()
     }
-    pub(crate) fn add_to_outbox(&mut self, msg: &Message) -> Result<()> {
-        let node_id = msg.dest.clone();
-        self.outbox.entry(node_id).or_default().push(msg.clone());
+    fn outbox_mut(&mut self, kind: OutboxKind) -> &mut Outbox {
+        match kind {
+            OutboxKind::RetryMsg => &mut self.retry_outbox,
+            OutboxKind::FanoutMsg => &mut self.msg_outbox,
+        }
+    }
+
+    pub(crate) fn add_to_outbox(&mut self, kind: OutboxKind, msg: &Message) -> Result<()> {
+        self.outbox_mut(kind)
+            .entry(msg.dest.clone())
+            .or_default()
+            .push(msg.clone());
+
         Ok(())
     }
-    pub(crate) fn remove_from_outbox(&mut self, node_id: String, msg_id: &u32) -> Result<()> {
-        if let Some(node_outbox) = self.outbox.get_mut(&node_id) {
+
+    pub(crate) fn remove_from_outbox(
+        &mut self,
+        kind: OutboxKind,
+        node_id: &str,
+        msg_id: &u32,
+    ) -> Result<()> {
+        if let Some(node_outbox) = self.outbox_mut(kind).get_mut(node_id) {
             if let Some(index) = node_outbox.iter().position(|m| m.body.msg_id() == msg_id) {
                 node_outbox.swap_remove(index);
             }
         }
+
         Ok(())
     }
 
     //remove all messages for a node in the outbox, to be used when we get an ack for a bulk message
     pub(crate) fn remove_all_from_outbox(&mut self, node_id: String) -> Result<()> {
-        if let Some(node_outbox) = self.outbox.get_mut(&node_id) {
+        if let Some(node_outbox) = self.retry_outbox.get_mut(&node_id) {
             node_outbox.clear();
         }
         Ok(())
     }
-    // pub(crate) fn get_outbox_messages(&self, node_id: String) -> Option<&Vec<Message>> {
-    //     if let Some(outbox) = self.outbox.get(&node_id) {
-    //         return Some(outbox);
-    //     }
-    //     return None;
-    // }
 }
 
 impl<Data> Default for Node<Data> {
@@ -267,7 +294,8 @@ impl<Data> Default for Node<Data> {
             node_ids: Default::default(),
             store: HashSet::new(),
             topology: HashMap::new(),
-            outbox: HashMap::new(),
+            retry_outbox: HashMap::new(),
+            msg_outbox: HashMap::new(),
         }
     }
 }
@@ -282,7 +310,8 @@ where
             node_ids: vec![],
             store: HashSet::new(),
             topology: HashMap::new(),
-            outbox: HashMap::new(),
+            retry_outbox: HashMap::new(),
+            msg_outbox: HashMap::new(),
         }
     }
     fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
@@ -348,6 +377,9 @@ where
 
     fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()> {
         broadcast::retry_messages(self, tx)
+    }
+    fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()> {
+        broadcast::fanout_messages(self, tx)
     }
 
     fn handle_bulk_messages(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
