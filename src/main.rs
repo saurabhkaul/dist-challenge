@@ -42,8 +42,8 @@ fn main_loop(
     tx: &mpsc::Sender<Message>,
     run_periodic: bool,
 ) -> anyhow::Result<()> {
-    let fanout_interval = Duration::from_millis(25);
-    let retry_interval = Duration::from_millis(50);
+    let fanout_interval = Duration::from_millis(50);
+    let retry_interval = Duration::from_millis(300);
     let mut last_fanout = Instant::now();
     let mut last_retry = Instant::now();
 

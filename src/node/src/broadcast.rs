@@ -15,38 +15,36 @@ where
     Node<Data>: NodeTrait,
 {
     if let MessageBody::broadcast { message, msg_id } = msg.body {
-        // If we've seen this message before, drop it silently, otherwise insert it to store
+        let reply = Message {
+            src: msg.dest.clone(),
+            dest: msg.src.clone(),
+            body: MessageBody::broadcast_ok {
+                in_reply_to: msg_id,
+                msg_id: node.get_and_increment_msg_id(),
+            },
+        };
+
+        // Always ack client/peer broadcast RPCs, but only fan out newly seen values.
         if node.insert_if_absent(Data::from(message)).is_none() {
+            reply.send(tx)?;
             return Ok(());
         }
 
-        // New message: fan out to neighbours and ack
         let neighbours: Option<&Vec<String>> = node.topology.get(&node.id);
         if let Some(neighbours) = neighbours {
-            let fanout_messages: Vec<Message> = neighbours
+            let fanout_peers: Vec<String> = neighbours
                 .iter()
                 .filter(|n| **n != msg.src)
                 .take(2)
-                .map(|neighbour_node_id| Message {
-                    src: node.id.clone(),
-                    dest: neighbour_node_id.to_owned(),
-                    body: MessageBody::broadcast {
-                        message,
-                        msg_id: node.get_and_increment_msg_id(),
-                    },
-                })
+                .cloned()
                 .collect();
-            for msg in fanout_messages {
-                node.add_to_outbox(crate::OutboxKind::FanoutMsg, &msg)?;
-                node.add_to_outbox(crate::OutboxKind::RetryMsg, &msg)?;
+            for peer in fanout_peers {
+                node.add_to_outbox(crate::OutboxKind::FanoutMsg, &peer, message)?;
+                node.add_to_outbox(crate::OutboxKind::RetryMsg, &peer, message)?;
             }
         }
 
-        let reply_payload = MessageBody::broadcast_ok {
-            in_reply_to: msg_id,
-            msg_id: node.get_and_increment_msg_id(),
-        };
-        msg.into_reply(reply_payload).send(tx)?;
+        reply.send(tx)?;
     }
     Ok(())
 }
@@ -183,20 +181,17 @@ where
 }
 
 pub fn handle_broadcast_ok_message<Data>(
-    node: &mut Node<Data>,
-    msg: Message,
+    _node: &mut Node<Data>,
+    _msg: Message,
     _tx: Sender<Message>,
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
-    if let MessageBody::broadcast_ok { in_reply_to, .. } = msg.body {
-        node.remove_from_outbox(crate::OutboxKind::RetryMsg, &msg.src, &in_reply_to)?
-    }
     Ok(())
 }
 
-pub fn handle_bulk_message<Data>(
+pub fn handle_gossip_message<Data>(
     node: &mut Node<Data>,
     msg: Message,
     tx: Sender<Message>,
@@ -206,15 +201,36 @@ where
     Node<Data>: NodeTrait,
 {
     let src = msg.src.clone();
-    if let MessageBody::bulk { msg_id, messages } = msg.body {
-        for inner_msg in messages {
-            node.next(inner_msg, tx.clone())?;
+    if let MessageBody::gossip { msg_id, messages } = msg.body {
+        let mut newly_seen = Vec::new();
+        for message in messages {
+            if node.insert_if_absent(Data::from(message)).is_some() {
+                newly_seen.push(message);
+            }
+        }
+
+        if !newly_seen.is_empty() {
+            let neighbours: Option<&Vec<String>> = node.topology.get(&node.id);
+            if let Some(neighbours) = neighbours {
+                let fanout_peers: Vec<String> = neighbours
+                    .iter()
+                    .filter(|n| **n != src)
+                    .take(2)
+                    .cloned()
+                    .collect();
+                for peer in fanout_peers {
+                    for message in &newly_seen {
+                        node.add_to_outbox(crate::OutboxKind::FanoutMsg, &peer, *message)?;
+                        node.add_to_outbox(crate::OutboxKind::RetryMsg, &peer, *message)?;
+                    }
+                }
+            }
         }
 
         Message {
             src: node.id.clone(),
             dest: src,
-            body: MessageBody::bulk_ok {
+            body: MessageBody::gossip_ok {
                 in_reply_to: msg_id,
             },
         }
@@ -224,7 +240,7 @@ where
     Ok(())
 }
 
-pub fn handle_bulk_ok_message<Data>(
+pub fn handle_gossip_ok_message<Data>(
     node: &mut Node<Data>,
     msg: Message,
     _tx: Sender<Message>,
@@ -232,8 +248,8 @@ pub fn handle_bulk_ok_message<Data>(
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
-    if let MessageBody::bulk_ok { .. } = msg.body {
-        node.remove_all_from_outbox(msg.src)?;
+    if let MessageBody::gossip_ok { in_reply_to } = msg.body {
+        node.acknowledge_gossip_batch(in_reply_to);
     }
 
     Ok(())
@@ -245,22 +261,26 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
     Node<Data>: NodeTrait,
 {
-    let retries: Vec<Message> = node
+    let retries: Vec<(String, HashSet<u32>)> = node
         .retry_outbox
         .iter()
         .filter(|(_, messages)| !messages.is_empty())
-        .map(|(node_id, messages)| Message {
-            src: node.id.clone(),
-            dest: node_id.clone(),
-            body: MessageBody::bulk {
-                msg_id: node.get_and_increment_msg_id(),
-                messages: messages.clone(),
-            },
-        })
+        .filter(|(node_id, _)| !node.has_in_flight_gossip_for(node_id))
+        .map(|(node_id, messages)| (node_id.clone(), messages.clone()))
         .collect();
 
-    for retry in retries {
-        retry.send(tx.clone())?;
+    for (node_id, messages) in retries {
+        let msg_id = node.get_and_increment_msg_id();
+        node.track_gossip_batch(msg_id, node_id.clone(), messages.clone());
+        Message {
+            src: node.id.clone(),
+            dest: node_id,
+            body: MessageBody::gossip {
+                msg_id,
+                messages: messages.iter().copied().collect(),
+            },
+        }
+        .send(tx.clone())?;
     }
 
     Ok(())
@@ -272,22 +292,23 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
     Node<Data>: NodeTrait,
 {
-    let pending: Vec<(String, Vec<Message>)> = node.msg_outbox.drain().collect();
-    let fanouts: Vec<Message> = pending
-        .iter()
-        .filter(|(_, messages)| !messages.is_empty())
-        .map(|(node_id, messages)| Message {
-            src: node.id.clone(),
-            dest: node_id.to_owned(),
-            body: MessageBody::bulk {
-                msg_id: node.get_and_increment_msg_id(),
-                messages:messages.to_owned(),
-            },
-        })
-        .collect();
+    let pending: Vec<(String, HashSet<u32>)> = node.msg_outbox.drain().collect();
+    for (node_id, messages) in pending {
+        if messages.is_empty() {
+            continue;
+        }
 
-    for bulk_msg in fanouts {
-        bulk_msg.send(tx.clone())?;
+        let msg_id = node.get_and_increment_msg_id();
+        node.track_gossip_batch(msg_id, node_id.clone(), messages.clone());
+        Message {
+            src: node.id.clone(),
+            dest: node_id,
+            body: MessageBody::gossip {
+                msg_id,
+                messages: messages.iter().copied().collect(),
+            },
+        }
+        .send(tx.clone())?;
     }
 
     Ok(())

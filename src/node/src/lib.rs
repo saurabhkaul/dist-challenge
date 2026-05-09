@@ -110,67 +110,13 @@ pub enum MessageBody {
         in_reply_to: u32,
         messages: Vec<u32>,
     },
-    bulk {
+    gossip {
         msg_id: u32,
-        messages: Vec<Message>,
+        messages: Vec<u32>,
     },
-    bulk_ok {
+    gossip_ok {
         in_reply_to: u32,
     },
-}
-
-impl MessageBody {
-    fn msg_id(&self) -> &u32 {
-        match self {
-            MessageBody::broadcast { message, msg_id } => msg_id,
-            MessageBody::broadcast_ok {
-                in_reply_to,
-                msg_id,
-            } => msg_id,
-            MessageBody::topology { topology, msg_id } => msg_id,
-            MessageBody::topology_ok {
-                msg_id,
-                in_reply_to,
-            } => msg_id,
-            MessageBody::read { msg_id } => msg_id,
-            MessageBody::read_ok {
-                messages,
-                in_reply_to,
-                msg_id,
-            } => msg_id,
-            MessageBody::generate { msg_id } => msg_id,
-            MessageBody::generate_ok {
-                msg_id,
-                in_reply_to,
-                id,
-            } => msg_id,
-            MessageBody::echo { msg_id, echo } => msg_id,
-            MessageBody::echo_ok {
-                msg_id,
-                in_reply_to,
-                echo,
-            } => msg_id,
-            MessageBody::init {
-                msg_id,
-                node_id,
-                node_ids,
-            } => msg_id,
-            MessageBody::init_ok { in_reply_to } => unreachable!(),
-            MessageBody::sync { msg_id, messages } => msg_id,
-            MessageBody::sync_ok {
-                msg_id,
-                in_reply_to,
-                messages,
-            } => msg_id,
-            MessageBody::bulk {
-                msg_id,
-                messages: _messages,
-            } => msg_id,
-            MessageBody::bulk_ok {
-                in_reply_to: _in_reply_to,
-            } => todo!(),
-        }
-    }
 }
 
 pub trait NodeTrait {
@@ -188,8 +134,8 @@ pub trait NodeTrait {
     fn request_sync_with_random_peers(&mut self) -> Vec<Message>;
     fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()>;
     fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()>;
-    fn handle_bulk_messages(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_bulk_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+    fn handle_gossip_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+    fn handle_gossip_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         match msg.body {
             MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
@@ -201,8 +147,8 @@ pub trait NodeTrait {
             MessageBody::broadcast_ok { .. } => self.handle_broadcast_ok_message(msg, tx),
             MessageBody::sync { .. } => self.handle_sync_message(msg, tx),
             MessageBody::sync_ok { .. } => self.handle_sync_ok_message(msg, tx),
-            MessageBody::bulk { .. } => self.handle_bulk_messages(msg, tx),
-            MessageBody::bulk_ok { .. } => self.handle_bulk_ok_message(msg, tx),
+            MessageBody::gossip { .. } => self.handle_gossip_message(msg, tx),
+            MessageBody::gossip_ok { .. } => self.handle_gossip_ok_message(msg, tx),
             MessageBody::init_ok { .. }
             | MessageBody::topology_ok { .. }
             | MessageBody::read_ok { .. }
@@ -212,7 +158,7 @@ pub trait NodeTrait {
     }
 }
 
-type Outbox = HashMap<String, Vec<Message>>;
+type Outbox = HashMap<String, HashSet<u32>>;
 #[derive(Debug, Clone, Copy)]
 pub enum OutboxKind {
     RetryMsg,
@@ -229,6 +175,7 @@ pub struct Node<Data> {
     pub retry_outbox: Outbox,
     //We collect fanout messages we have to send for each node, and send in one go
     pub msg_outbox: Outbox,
+    pub in_flight_gossip: HashMap<u32, (String, HashSet<u32>)>,
 }
 
 impl<Data> Node<Data>
@@ -254,36 +201,46 @@ where
         }
     }
 
-    pub(crate) fn add_to_outbox(&mut self, kind: OutboxKind, msg: &Message) -> Result<()> {
-        self.outbox_mut(kind)
-            .entry(msg.dest.clone())
-            .or_default()
-            .push(msg.clone());
-
-        Ok(())
-    }
-
-    pub(crate) fn remove_from_outbox(
+    pub(crate) fn add_to_outbox(
         &mut self,
         kind: OutboxKind,
         node_id: &str,
-        msg_id: &u32,
+        message: u32,
     ) -> Result<()> {
-        if let Some(node_outbox) = self.outbox_mut(kind).get_mut(node_id) {
-            if let Some(index) = node_outbox.iter().position(|m| m.body.msg_id() == msg_id) {
-                node_outbox.swap_remove(index);
-            }
-        }
+        self.outbox_mut(kind)
+            .entry(node_id.to_owned())
+            .or_default()
+            .insert(message);
 
         Ok(())
     }
 
-    //remove all messages for a node in the outbox, to be used when we get an ack for a bulk message
-    pub(crate) fn remove_all_from_outbox(&mut self, node_id: String) -> Result<()> {
-        if let Some(node_outbox) = self.retry_outbox.get_mut(&node_id) {
-            node_outbox.clear();
+    pub(crate) fn track_gossip_batch(
+        &mut self,
+        msg_id: u32,
+        node_id: String,
+        messages: HashSet<u32>,
+    ) {
+        self.in_flight_gossip.insert(msg_id, (node_id, messages));
+    }
+
+    pub(crate) fn has_in_flight_gossip_for(&self, node_id: &str) -> bool {
+        self.in_flight_gossip
+            .values()
+            .any(|(peer, _)| peer == node_id)
+    }
+
+    pub(crate) fn acknowledge_gossip_batch(&mut self, msg_id: u32) {
+        if let Some((node_id, acked_messages)) = self.in_flight_gossip.remove(&msg_id) {
+            if let Some(node_outbox) = self.retry_outbox.get_mut(&node_id) {
+                for message in acked_messages {
+                    node_outbox.remove(&message);
+                }
+                if node_outbox.is_empty() {
+                    self.retry_outbox.remove(&node_id);
+                }
+            }
         }
-        Ok(())
     }
 }
 
@@ -296,6 +253,7 @@ impl<Data> Default for Node<Data> {
             topology: HashMap::new(),
             retry_outbox: HashMap::new(),
             msg_outbox: HashMap::new(),
+            in_flight_gossip: HashMap::new(),
         }
     }
 }
@@ -312,6 +270,7 @@ where
             topology: HashMap::new(),
             retry_outbox: HashMap::new(),
             msg_outbox: HashMap::new(),
+            in_flight_gossip: HashMap::new(),
         }
     }
     fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
@@ -382,11 +341,11 @@ where
         broadcast::fanout_messages(self, tx)
     }
 
-    fn handle_bulk_messages(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        broadcast::handle_bulk_message(self, msg, tx)
+    fn handle_gossip_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        broadcast::handle_gossip_message(self, msg, tx)
     }
 
-    fn handle_bulk_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        broadcast::handle_bulk_ok_message(self, msg, tx)
+    fn handle_gossip_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        broadcast::handle_gossip_ok_message(self, msg, tx)
     }
 }
