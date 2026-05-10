@@ -1,0 +1,8 @@
+[package]
+name = "node_common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+serde = { version = "1.0.159", features = ["derive"] }

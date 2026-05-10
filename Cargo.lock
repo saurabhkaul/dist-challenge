@@ -77,6 +77,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "327762f6e5a765692301e5bb513e0d9fef63be86bbc14528052b1cd3e6f03e07"
 
 [[package]]
+name = "broadcast_node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "env_logger",
+ "futures",
+ "log",
+ "node_common",
+ "rand",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "simple-error",
+ "tokio",
+ "tokio-context",
+ "tokio-util",
+ "ulid",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -109,10 +130,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "broadcast_node",
  "env_logger",
  "futures",
+ "g_counter_node",
  "log",
- "node",
  "serde",
  "serde_derive",
  "serde_json",
@@ -236,6 +258,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "g_counter_node"
+version = "0.1.0"
+dependencies = [
+ "node_common",
+ "serde",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,23 +377,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "node"
+name = "node_common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "env_logger",
- "futures",
- "log",
- "rand",
  "serde",
- "serde_derive",
- "serde_json",
- "simple-error",
- "tokio",
- "tokio-context",
- "tokio-util",
- "ulid",
 ]
 
 [[package]]

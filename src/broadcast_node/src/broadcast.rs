@@ -1,4 +1,4 @@
-use crate::{Message, MessageBody, Node, NodeTrait};
+use crate::{BroadcastNodeTrait, Message, MessageBody, Node};
 use anyhow::Result;
 use rand::seq::IndexedRandom;
 use std::collections::HashSet;
@@ -12,7 +12,7 @@ pub fn handle_broadcast_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     if let MessageBody::broadcast { message, msg_id } = msg.body {
         let reply = Message {
@@ -56,7 +56,7 @@ pub fn handle_read_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     if let MessageBody::read { msg_id } = msg.body {
         let messages: Vec<u32> = node.read();
@@ -78,7 +78,7 @@ pub fn handle_topology_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     if let MessageBody::topology {
         ref topology,
@@ -103,7 +103,7 @@ pub fn handle_sync_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     if let MessageBody::sync {
         msg_id,
@@ -162,7 +162,7 @@ where
 pub fn request_sync_with_random_peers<Data>(node: &mut Node<Data>) -> Vec<Message>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     let all_nodes: Vec<String> = node.node_ids.clone();
     let mut rng = rand::rng();
@@ -198,7 +198,7 @@ pub fn handle_gossip_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     let src = msg.src.clone();
     if let MessageBody::gossip { msg_id, messages } = msg.body {
@@ -259,7 +259,7 @@ where
 pub fn retry_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     let retries: Vec<(String, HashSet<u32>)> = node
         .retry_outbox
@@ -290,7 +290,7 @@ where
 pub fn fanout_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     let pending: Vec<(String, HashSet<u32>)> = node.msg_outbox.drain().collect();
     for (node_id, messages) in pending {

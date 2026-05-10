@@ -1,127 +1,21 @@
 mod broadcast;
 mod echo;
+mod message_body;
 #[cfg(test)]
 mod tests;
 mod unique_id;
 
 use anyhow::Ok;
 use anyhow::Result;
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::mpsc::Sender;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct Message {
-    pub src: String,
-    pub dest: String,
-    pub body: MessageBody,
-}
+pub use crate::message_body::MessageBody;
+pub use node_common::NodeTrait;
+pub type Message = node_common::Message<MessageBody>;
 
-impl Message {
-    pub fn send(self, tx: Sender<Message>) -> Result<(), anyhow::Error> {
-        tx.send(self)?;
-        Ok(())
-    }
-    pub fn into_reply(self, payload: MessageBody) -> Message {
-        Message {
-            src: self.dest,
-            dest: self.src,
-            body: payload,
-        }
-    }
-    pub fn into_message(self, payload: MessageBody, new_dest: &str) -> Message {
-        Message {
-            src: self.dest,
-            dest: new_dest.to_owned(),
-            body: payload,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum MessageBody {
-    #[serde(rename_all = "snake_case")]
-    broadcast {
-        message: u32,
-        msg_id: u32,
-    },
-
-    broadcast_ok {
-        in_reply_to: u32,
-        msg_id: u32,
-    },
-    topology {
-        topology: HashMap<String, Vec<String>>,
-        msg_id: u32,
-    },
-    topology_ok {
-        msg_id: u32,
-        in_reply_to: u32,
-    },
-    read {
-        msg_id: u32,
-    },
-    read_ok {
-        messages: Vec<u32>,
-        in_reply_to: u32,
-        msg_id: u32,
-    },
-
-    generate {
-        msg_id: u32,
-    },
-
-    generate_ok {
-        msg_id: u32,
-        in_reply_to: u32,
-        id: String,
-    },
-
-    echo {
-        msg_id: u32,
-        echo: String,
-    },
-
-    echo_ok {
-        msg_id: u32,
-        in_reply_to: u32,
-        echo: String,
-    },
-
-    init {
-        msg_id: u32,
-        node_id: String,
-        node_ids: Vec<String>,
-    },
-    init_ok {
-        in_reply_to: u32,
-    },
-    //Custom messages not part of the protocol
-    sync {
-        msg_id: u32,
-        messages: Vec<u32>,
-    },
-    sync_ok {
-        msg_id: u32,
-        in_reply_to: u32,
-        messages: Vec<u32>,
-    },
-    gossip {
-        msg_id: u32,
-        messages: Vec<u32>,
-    },
-    gossip_ok {
-        in_reply_to: u32,
-    },
-}
-
-pub trait NodeTrait {
-    fn new() -> Self;
-    fn handle_init_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
+pub trait BroadcastNodeTrait: NodeTrait<Message = Message> {
     fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> anyhow::Result<()>;
     fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
@@ -134,8 +28,6 @@ pub trait NodeTrait {
     fn request_sync_with_random_peers(&mut self) -> Vec<Message>;
     fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()>;
     fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()>;
-    fn handle_gossip_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_gossip_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         match msg.body {
             MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
@@ -175,13 +67,15 @@ pub struct Node<Data> {
     pub retry_outbox: Outbox,
     //We collect fanout messages we have to send for each node, and send in one go
     pub msg_outbox: Outbox,
+    //Minor Optimization : Tracking gossip messages we have sent, so that we can skip them during retries.
+    //Just to make things less chatty
     pub in_flight_gossip: HashMap<u32, (String, HashSet<u32>)>,
 }
 
 impl<Data> Node<Data>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Eq + Hash,
-    Self: NodeTrait,
+    Self: BroadcastNodeTrait,
 {
     pub(crate) fn insert_if_absent(&mut self, payload: Data) -> Option<Data> {
         if !self.store.contains(&payload) {
@@ -262,6 +156,8 @@ impl<Data> NodeTrait for Node<Data>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
+    type Message = Message;
+
     fn new() -> Self {
         Self {
             id: String::new(),
@@ -294,6 +190,19 @@ where
         Ok(())
     }
 
+    fn handle_gossip_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        broadcast::handle_gossip_message(self, msg, tx)
+    }
+
+    fn handle_gossip_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        broadcast::handle_gossip_ok_message(self, msg, tx)
+    }
+}
+
+impl<Data> BroadcastNodeTrait for Node<Data>
+where
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
+{
     fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         echo::handle_echo_message(self, msg, tx)
     }
@@ -339,13 +248,5 @@ where
     }
     fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()> {
         broadcast::fanout_messages(self, tx)
-    }
-
-    fn handle_gossip_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        broadcast::handle_gossip_message(self, msg, tx)
-    }
-
-    fn handle_gossip_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        broadcast::handle_gossip_ok_message(self, msg, tx)
     }
 }

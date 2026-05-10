@@ -8,8 +8,15 @@ edition = "2021"
 
 [workspace]
 members = [
-    "src/node"
+    "src/broadcast_node",
+    "src/g_counter_node",
+    "src/node_common"
 ]
+
+[features]
+default = ["broadcast"]
+broadcast = ["dep:broadcast_node"]
+g-counter = ["dep:g_counter_node"]
 
 
 [dependencies]
@@ -25,6 +32,6 @@ tokio-context = "0.1.3"
 tokio-util = "0.7.7"
 serde_derive = "1.0.192"
 anyhow = "1.0.86"
-node = {path="src/node"}
+broadcast_node = { path = "src/broadcast_node", optional = true }
+g_counter_node = { path = "src/g_counter_node", optional = true }
 serde_path_to_error = "0.1.16"
-

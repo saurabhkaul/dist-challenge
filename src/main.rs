@@ -1,6 +1,13 @@
+#[cfg(all(feature = "broadcast", feature = "g-counter", not(debug_assertions)))]
+compile_error!("select only one workload feature");
+
+#[cfg(feature = "broadcast")]
 use anyhow::Context;
-use node::{Message, Node, NodeTrait};
+#[cfg(feature = "broadcast")]
+use broadcast_node::{BroadcastNodeTrait, Message, Node};
+#[cfg(feature = "broadcast")]
 use serde_path_to_error::deserialize;
+#[cfg(feature = "broadcast")]
 use std::{
     io::{stdin, stdout, BufRead, Lines, Write},
     sync::mpsc,
@@ -8,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "broadcast")]
 fn main() -> anyhow::Result<()> {
     let mut node: Node<u32> = Node::default();
     let (tx, rx) = mpsc::channel::<Message>();
@@ -36,6 +44,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "broadcast"))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("no workload feature selected")
+}
+
+#[cfg(feature = "broadcast")]
 fn main_loop(
     stdin: Lines<std::io::StdinLock<'_>>,
     node: &mut Node<u32>,

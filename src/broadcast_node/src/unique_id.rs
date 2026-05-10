@@ -1,4 +1,4 @@
-use crate::{Message, MessageBody, Node, NodeTrait};
+use crate::{BroadcastNodeTrait, Message, MessageBody, Node};
 use anyhow::Result;
 use std::hash::Hash;
 use std::sync::mpsc::Sender;
@@ -24,7 +24,7 @@ pub fn handle_generate_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: NodeTrait,
+    Node<Data>: BroadcastNodeTrait,
 {
     if let MessageBody::generate { msg_id } = msg.body {
         let unique_id = generate_unique_id();
