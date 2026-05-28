@@ -261,6 +261,7 @@ dependencies = [
 name = "g_counter_node"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "node_common",
  "serde",
 ]

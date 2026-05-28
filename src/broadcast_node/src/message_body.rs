@@ -1,11 +1,18 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MessageBody {
     #[serde(rename_all = "snake_case")]
+    init {
+        msg_id: u32,
+        node_id: String,
+        node_ids: Vec<String>,
+    },
+    init_ok {
+        in_reply_to: u32,
+    },
     broadcast {
         message: u32,
         msg_id: u32,
@@ -52,16 +59,7 @@ pub enum MessageBody {
         in_reply_to: u32,
         echo: String,
     },
-
-    init {
-        msg_id: u32,
-        node_id: String,
-        node_ids: Vec<String>,
-    },
-    init_ok {
-        in_reply_to: u32,
-    },
-    //Custom messages not part of the protocol
+    // Custom messages not part of the protocol.
     sync {
         msg_id: u32,
         messages: Vec<u32>,

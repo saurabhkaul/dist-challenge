@@ -4,7 +4,7 @@ compile_error!("select only one workload feature");
 #[cfg(feature = "broadcast")]
 use anyhow::Context;
 #[cfg(feature = "broadcast")]
-use broadcast_node::{BroadcastNodeTrait, Message, Node};
+use broadcast_node::{EchoUniqueBroadcastNode, Message, Node};
 #[cfg(feature = "broadcast")]
 use serde_path_to_error::deserialize;
 #[cfg(feature = "broadcast")]

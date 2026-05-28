@@ -40,6 +40,7 @@ pub trait NodeTrait {
     type Message;
 
     fn new() -> Self;
+    fn get_and_increment_msg_id(&self) -> u32;
     fn handle_init_message(&mut self, msg: Self::Message, tx: Sender<Self::Message>) -> Result<()>;
     fn handle_gossip_message(
         &mut self,

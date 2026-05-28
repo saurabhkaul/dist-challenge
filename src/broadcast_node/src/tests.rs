@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use crate::{BroadcastNodeTrait, Message, MessageBody, Node, NodeTrait};
+use crate::{EchoUniqueBroadcastNode, Message, MessageBody, Node, NodeTrait};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

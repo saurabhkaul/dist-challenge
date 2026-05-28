@@ -15,14 +15,14 @@ pub use crate::message_body::MessageBody;
 pub use node_common::NodeTrait;
 pub type Message = node_common::Message<MessageBody>;
 
-pub trait BroadcastNodeTrait: NodeTrait<Message = Message> {
+//This solves the first 3 challenges in itself
+pub trait EchoUniqueBroadcastNode: NodeTrait<Message = Message> {
     fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> anyhow::Result<()>;
     fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_broadcast_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn get_and_increment_msg_id(&self) -> u32;
     fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
     fn request_sync_with_random_peers(&mut self) -> Vec<Message>;
@@ -75,7 +75,7 @@ pub struct Node<Data> {
 impl<Data> Node<Data>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Eq + Hash,
-    Self: BroadcastNodeTrait,
+    Self: EchoUniqueBroadcastNode,
 {
     pub(crate) fn insert_if_absent(&mut self, payload: Data) -> Option<Data> {
         if !self.store.contains(&payload) {
@@ -190,6 +190,10 @@ where
         Ok(())
     }
 
+    fn get_and_increment_msg_id(&self) -> u32 {
+        unique_id::generate_message_id()
+    }
+
     fn handle_gossip_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_gossip_message(self, msg, tx)
     }
@@ -199,7 +203,7 @@ where
     }
 }
 
-impl<Data> BroadcastNodeTrait for Node<Data>
+impl<Data> EchoUniqueBroadcastNode for Node<Data>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
@@ -221,10 +225,6 @@ where
 
     fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_topology_message(self, msg, tx)
-    }
-
-    fn get_and_increment_msg_id(&self) -> u32 {
-        unique_id::generate_message_id()
     }
 
     fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
