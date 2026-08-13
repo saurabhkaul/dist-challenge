@@ -169,7 +169,7 @@ fn broadcast_new_message_acks_and_fans_out_to_neighbours() {
             msg_id: 1,
         },
     );
-    node.handle_broadcast_message(incoming, tx).unwrap();
+    node.handle_broadcast_message(incoming, tx.clone()).unwrap();
 
     let sent = drain(&rx);
     assert_eq!(sent.len(), 1);
@@ -181,14 +181,15 @@ fn broadcast_new_message_acks_and_fans_out_to_neighbours() {
         "ack should be broadcast_ok in_reply_to=1"
     );
 
-    for dest in ["n2", "n3"] {
-        assert!(
-            node.msg_outbox
-                .get(dest)
-                .is_some_and(|messages| messages.contains(&99)),
-            "fanout payload should be queued for {dest}"
-        );
-    }
+    node.fanout_messages(tx).unwrap();
+    let fanout = drain(&rx);
+    let destinations: std::collections::HashSet<_> =
+        fanout.iter().map(|message| message.dest.as_str()).collect();
+    assert_eq!(destinations, std::collections::HashSet::from(["n2", "n3"]));
+    assert!(fanout.iter().all(|message| matches!(
+        &message.body,
+        MessageBody::gossip { messages, .. } if messages.contains(&99)
+    )));
 
     // Value stored
     assert!(node.store.contains(&99u32));
@@ -210,7 +211,7 @@ fn broadcast_does_not_fan_out_back_to_sender() {
             msg_id: 2,
         },
     );
-    node.handle_broadcast_message(incoming, tx).unwrap();
+    node.handle_broadcast_message(incoming, tx.clone()).unwrap();
 
     let sent = drain(&rx);
     assert_eq!(sent.len(), 1);
@@ -219,16 +220,14 @@ fn broadcast_does_not_fan_out_back_to_sender() {
             .any(|m| m.dest == "n2" && matches!(m.body, MessageBody::broadcast_ok { .. })),
         "should ack n2"
     );
-    assert!(
-        node.msg_outbox
-            .get("n3")
-            .is_some_and(|messages| messages.contains(&55)),
-        "should queue fanout to n3"
-    );
-    assert!(
-        !node.msg_outbox.contains_key("n2"),
-        "must not queue fanout back to sender n2"
-    );
+    node.fanout_messages(tx).unwrap();
+    let fanout = drain(&rx);
+    assert_eq!(fanout.len(), 1);
+    assert_eq!(fanout[0].dest, "n3", "must not fan out back to n2");
+    assert!(matches!(
+        &fanout[0].body,
+        MessageBody::gossip { messages, .. } if messages.contains(&55)
+    ));
 }
 
 #[test]
@@ -252,19 +251,21 @@ fn broadcast_duplicate_message_acks_without_fanout() {
     node.handle_broadcast_message(make_msg(), tx.clone())
         .unwrap();
     drain(&rx); // discard first delivery
+    node.fanout_messages(tx.clone()).unwrap();
+    drain(&rx); // discard the first fanout
 
     // Send the exact same value again
-    node.handle_broadcast_message(make_msg(), tx).unwrap();
+    node.handle_broadcast_message(make_msg(), tx.clone())
+        .unwrap();
     let sent = drain(&rx);
     assert_eq!(sent.len(), 1);
     assert!(matches!(
         sent[0].body,
         MessageBody::broadcast_ok { in_reply_to: 1, .. }
     ));
+    node.fanout_messages(tx).unwrap();
     assert!(
-        node.msg_outbox
-            .get("n2")
-            .is_none_or(|messages| messages.len() == 1),
+        drain(&rx).is_empty(),
         "duplicate broadcast should not queue another fanout payload"
     );
 }
@@ -274,7 +275,7 @@ fn broadcast_new_message_added_to_outbox() {
     let mut node = make_node();
     node.topology
         .insert("n1".to_string(), vec!["n2".to_string()]);
-    let (tx, _rx) = channel();
+    let (tx, rx) = channel();
 
     node.handle_broadcast_message(
         msg(
@@ -285,15 +286,19 @@ fn broadcast_new_message_added_to_outbox() {
                 msg_id: 1,
             },
         ),
-        tx,
+        tx.clone(),
     )
     .unwrap();
+    drain(&rx); // discard broadcast_ok
 
-    assert!(
-        node.retry_outbox.contains_key("n2"),
-        "fanout message to n2 should be in outbox keyed by destination n2"
-    );
-    assert!(node.retry_outbox["n2"].contains(&42));
+    node.fanout_messages(tx).unwrap();
+    let sent = drain(&rx);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].dest, "n2");
+    assert!(matches!(
+        &sent[0].body,
+        MessageBody::gossip { messages, .. } if messages == &vec![42]
+    ));
 }
 
 // ── Read ─────────────────────────────────────────────────────────────────────
@@ -489,31 +494,42 @@ fn gossip_ok_removes_messages_from_outbox() {
     let mut node = make_node();
     let (tx, rx) = channel();
 
-    node.retry_outbox
-        .entry("n2".to_string())
-        .or_default()
-        .insert(10);
-    node.retry_outbox
-        .entry("n2".to_string())
-        .or_default()
-        .insert(11);
-    node.in_flight_gossip
-        .insert(5, ("n2".to_string(), [10].into_iter().collect()));
+    node.outbox.enqueue("n2".to_string(), 10, 10);
+    node.fanout_messages(tx.clone()).unwrap();
+    let first_batch = drain(&rx);
+    assert_eq!(first_batch.len(), 1);
+    let first_msg_id = match first_batch[0].body {
+        MessageBody::gossip { msg_id, .. } => msg_id,
+        ref other => panic!("expected gossip, got {other:?}"),
+    };
 
-    assert_eq!(node.retry_outbox["n2"].len(), 2);
+    // This value was not part of the acknowledged batch and must survive its ack.
+    node.outbox.enqueue("n2".to_string(), 11, 11);
 
     node.handle_gossip_ok_message(
-        msg("n2", "n1", MessageBody::gossip_ok { in_reply_to: 5 }),
-        tx,
+        msg(
+            "n2",
+            "n1",
+            MessageBody::gossip_ok {
+                in_reply_to: first_msg_id,
+            },
+        ),
+        tx.clone(),
     )
     .unwrap();
 
-    assert!(!node.retry_outbox["n2"].contains(&10));
-    assert!(node.retry_outbox["n2"].contains(&11));
     assert!(
         drain(&rx).is_empty(),
         "gossip_ok handler must not send messages"
     );
+
+    node.fanout_messages(tx).unwrap();
+    let remaining = drain(&rx);
+    assert_eq!(remaining.len(), 1);
+    assert!(matches!(
+        &remaining[0].body,
+        MessageBody::gossip { messages, .. } if messages == &vec![11]
+    ));
 }
 
 // ── Retry ─────────────────────────────────────────────────────────────────────
@@ -523,14 +539,8 @@ fn retry_resends_all_outbox_messages() {
     let mut node = make_node();
     let (tx, rx) = channel();
 
-    node.retry_outbox
-        .entry("n2".to_string())
-        .or_default()
-        .insert(1);
-    node.retry_outbox
-        .entry("n3".to_string())
-        .or_default()
-        .insert(2);
+    node.outbox.enqueue("n2".to_string(), 1, 1);
+    node.outbox.enqueue("n3".to_string(), 2, 2);
 
     node.retry_messages(tx).unwrap();
 
@@ -546,20 +556,15 @@ fn retry_resends_all_outbox_messages() {
 }
 
 #[test]
-fn retry_skips_peer_with_in_flight_gossip() {
+fn retry_skips_peer_with_non_expired_in_flight_batch() {
     let mut node = make_node();
     let (tx, rx) = channel();
 
-    node.retry_outbox
-        .entry("n2".to_string())
-        .or_default()
-        .insert(1);
-    node.retry_outbox
-        .entry("n3".to_string())
-        .or_default()
-        .insert(2);
-    node.in_flight_gossip
-        .insert(100, ("n2".to_string(), [1].into_iter().collect()));
+    node.outbox.enqueue("n2".to_string(), 1, 1);
+    node.fanout_messages(tx.clone()).unwrap();
+    drain(&rx); // n2 now has a non-expired in-flight batch
+
+    node.outbox.enqueue("n3".to_string(), 2, 2);
 
     node.retry_messages(tx).unwrap();
 

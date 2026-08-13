@@ -4,6 +4,9 @@ use rand::seq::IndexedRandom;
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+
+const GOSSIP_ACK_TIMEOUT: Duration = Duration::from_millis(300);
 
 pub fn handle_broadcast_message<Data>(
     node: &mut Node<Data>,
@@ -39,8 +42,7 @@ where
                 .cloned()
                 .collect();
             for peer in fanout_peers {
-                node.add_to_outbox(crate::OutboxKind::FanoutMsg, &peer, message)?;
-                node.add_to_outbox(crate::OutboxKind::RetryMsg, &peer, message)?;
+                node.outbox.enqueue(peer, message, message);
             }
         }
 
@@ -220,8 +222,7 @@ where
                     .collect();
                 for peer in fanout_peers {
                     for message in &newly_seen {
-                        node.add_to_outbox(crate::OutboxKind::FanoutMsg, &peer, *message)?;
-                        node.add_to_outbox(crate::OutboxKind::RetryMsg, &peer, *message)?;
+                        node.outbox.enqueue(peer.clone(), *message, *message);
                     }
                 }
             }
@@ -249,7 +250,7 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
     if let MessageBody::gossip_ok { in_reply_to } = msg.body {
-        node.acknowledge_gossip_batch(in_reply_to);
+        node.outbox.acknowledge(&in_reply_to);
     }
 
     Ok(())
@@ -261,29 +262,10 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
     Node<Data>: EchoUniqueBroadcastNode,
 {
-    let retries: Vec<(String, HashSet<u32>)> = node
-        .retry_outbox
-        .iter()
-        .filter(|(_, messages)| !messages.is_empty())
-        .filter(|(node_id, _)| !node.has_in_flight_gossip_for(node_id))
-        .map(|(node_id, messages)| (node_id.clone(), messages.clone()))
-        .collect();
+    node.outbox
+        .expire_in_flight(Instant::now(), GOSSIP_ACK_TIMEOUT);
 
-    for (node_id, messages) in retries {
-        let msg_id = node.get_and_increment_msg_id();
-        node.track_gossip_batch(msg_id, node_id.clone(), messages.clone());
-        Message {
-            src: node.id.clone(),
-            dest: node_id,
-            body: MessageBody::gossip {
-                msg_id,
-                messages: messages.iter().copied().collect(),
-            },
-        }
-        .send(tx.clone())?;
-    }
-
-    Ok(())
+    send_ready_batches(node, tx)
 }
 
 //We do bulk fanouts
@@ -292,24 +274,38 @@ where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
     Node<Data>: EchoUniqueBroadcastNode,
 {
-    let pending: Vec<(String, HashSet<u32>)> = node.msg_outbox.drain().collect();
-    for (node_id, messages) in pending {
-        if messages.is_empty() {
-            continue;
-        }
+    send_ready_batches(node, tx)
+}
 
-        let msg_id = node.get_and_increment_msg_id();
-        node.track_gossip_batch(msg_id, node_id.clone(), messages.clone());
-        Message {
+fn send_ready_batches<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
+where
+    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
+    Node<Data>: EchoUniqueBroadcastNode,
+{
+    let batches = node
+        .outbox
+        .prepare_batches(Instant::now(), crate::unique_id::generate_message_id);
+    for batch in batches {
+        let message_id = batch.message_id;
+
+        let messages = batch
+            .items
+            .into_iter()
+            .map(|(_, payload)| payload)
+            .collect();
+
+        let outgoing = Message {
             src: node.id.clone(),
-            dest: node_id,
+            dest: batch.peer,
             body: MessageBody::gossip {
-                msg_id,
-                messages: messages.iter().copied().collect(),
+                msg_id: message_id,
+                messages,
             },
+        };
+        if let Err(error) = outgoing.send(tx.clone()) {
+            node.outbox.mark_send_failed(&message_id);
+            return Err(error);
         }
-        .send(tx.clone())?;
     }
-
     Ok(())
 }
