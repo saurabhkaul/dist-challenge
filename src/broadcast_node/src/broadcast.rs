@@ -1,4 +1,4 @@
-use crate::{EchoUniqueBroadcastNode, Message, MessageBody, Node, NodeTrait};
+use crate::{Message, MessageBody, Node, NodeTrait};
 use anyhow::Result;
 use rand::seq::IndexedRandom;
 use std::collections::HashSet;
@@ -15,7 +15,6 @@ pub fn handle_broadcast_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     if let MessageBody::broadcast { message, msg_id } = msg.body {
         let reply = Message {
@@ -42,6 +41,7 @@ where
                 .cloned()
                 .collect();
             for peer in fanout_peers {
+                //Since we are storing a unique set of values broadcasted, we can get away with having the value itself as ItemId
                 node.outbox.enqueue(peer, message, message);
             }
         }
@@ -58,7 +58,6 @@ pub fn handle_read_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     if let MessageBody::read { msg_id } = msg.body {
         let messages: Vec<u32> = node.read();
@@ -80,7 +79,6 @@ pub fn handle_topology_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     if let MessageBody::topology {
         ref topology,
@@ -105,7 +103,6 @@ pub fn handle_sync_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     if let MessageBody::sync {
         msg_id,
@@ -164,7 +161,6 @@ where
 pub fn request_sync_with_random_peers<Data>(node: &mut Node<Data>) -> Vec<Message>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     let all_nodes: Vec<String> = node.node_ids.clone();
     let mut rng = rand::rng();
@@ -200,7 +196,6 @@ pub fn handle_gossip_message<Data>(
 ) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     let src = msg.src.clone();
     if let MessageBody::gossip { msg_id, messages } = msg.body {
@@ -260,7 +255,6 @@ where
 pub fn retry_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     node.outbox
         .expire_in_flight(Instant::now(), GOSSIP_ACK_TIMEOUT);
@@ -272,7 +266,6 @@ where
 pub fn fanout_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     send_ready_batches(node, tx)
 }
@@ -280,7 +273,6 @@ where
 fn send_ready_batches<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Result<()>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-    Node<Data>: EchoUniqueBroadcastNode,
 {
     let batches = node
         .outbox

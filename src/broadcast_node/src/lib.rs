@@ -17,41 +17,6 @@ pub use node_common::NodeTrait;
 pub type Message = node_common::Message<MessageBody>;
 pub type BroadCastOutbox = Outbox<String, u32, u32, u32>;
 
-//This solves the first 3 challenges in itself
-pub trait EchoUniqueBroadcastNode: NodeTrait<Message = Message> {
-    fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> anyhow::Result<()>;
-    fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_broadcast_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()>;
-    fn request_sync_with_random_peers(&mut self) -> Vec<Message>;
-    fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()>;
-    fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()>;
-    fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        match msg.body {
-            MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
-            MessageBody::init { .. } => self.handle_init_message(msg, tx),
-            MessageBody::generate { .. } => self.handle_generate_message(msg, tx),
-            MessageBody::broadcast { .. } => self.handle_broadcast_message(msg, tx),
-            MessageBody::topology { .. } => self.handle_topology_message(msg, tx),
-            MessageBody::read { .. } => self.handle_read_message(msg, tx),
-            MessageBody::broadcast_ok { .. } => self.handle_broadcast_ok_message(msg, tx),
-            MessageBody::sync { .. } => self.handle_sync_message(msg, tx),
-            MessageBody::sync_ok { .. } => self.handle_sync_ok_message(msg, tx),
-            MessageBody::gossip { .. } => self.handle_gossip_message(msg, tx),
-            MessageBody::gossip_ok { .. } => self.handle_gossip_ok_message(msg, tx),
-            MessageBody::init_ok { .. }
-            | MessageBody::topology_ok { .. }
-            | MessageBody::read_ok { .. }
-            | MessageBody::generate_ok { .. }
-            | MessageBody::echo_ok { .. } => unreachable!(),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct Node<Data> {
     pub id: String,
@@ -64,7 +29,6 @@ pub struct Node<Data> {
 impl<Data> Node<Data>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Eq + Hash,
-    Self: EchoUniqueBroadcastNode,
 {
     pub(crate) fn insert_if_absent(&mut self, payload: Data) -> Option<Data> {
         if !self.store.contains(&payload) {
@@ -140,50 +104,71 @@ where
     }
 }
 
-impl<Data> EchoUniqueBroadcastNode for Node<Data>
+impl<Data> Node<Data>
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
-    fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_echo_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         echo::handle_echo_message(self, msg, tx)
     }
 
-    fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_generate_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         unique_id::handle_generate_message(self, msg, tx)
     }
 
-    fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_broadcast_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_broadcast_message(self, msg, tx)
     }
 
-    fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_read_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_read_message(self, msg, tx)
     }
 
-    fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_topology_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_topology_message(self, msg, tx)
     }
 
-    fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_sync_message(self, msg, tx)
     }
 
-    fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_sync_ok_message(self, msg, tx)
     }
 
-    fn request_sync_with_random_peers(&mut self) -> Vec<Message> {
+    pub fn request_sync_with_random_peers(&mut self) -> Vec<Message> {
         broadcast::request_sync_with_random_peers(self)
     }
 
-    fn handle_broadcast_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+    pub fn handle_broadcast_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_broadcast_ok_message(self, msg, tx)
     }
 
-    fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()> {
+    pub fn retry_messages(&mut self, tx: Sender<Message>) -> Result<()> {
         broadcast::retry_messages(self, tx)
     }
-    fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()> {
+    pub fn fanout_messages(&mut self, tx: Sender<Message>) -> Result<()> {
         broadcast::fanout_messages(self, tx)
+    }
+
+    pub fn next(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
+        match msg.body {
+            MessageBody::echo { .. } => self.handle_echo_message(msg, tx),
+            MessageBody::init { .. } => self.handle_init_message(msg, tx),
+            MessageBody::generate { .. } => self.handle_generate_message(msg, tx),
+            MessageBody::broadcast { .. } => self.handle_broadcast_message(msg, tx),
+            MessageBody::topology { .. } => self.handle_topology_message(msg, tx),
+            MessageBody::read { .. } => self.handle_read_message(msg, tx),
+            MessageBody::broadcast_ok { .. } => self.handle_broadcast_ok_message(msg, tx),
+            MessageBody::sync { .. } => self.handle_sync_message(msg, tx),
+            MessageBody::sync_ok { .. } => self.handle_sync_ok_message(msg, tx),
+            MessageBody::gossip { .. } => self.handle_gossip_message(msg, tx),
+            MessageBody::gossip_ok { .. } => self.handle_gossip_ok_message(msg, tx),
+            MessageBody::init_ok { .. }
+            | MessageBody::topology_ok { .. }
+            | MessageBody::read_ok { .. }
+            | MessageBody::generate_ok { .. }
+            | MessageBody::echo_ok { .. } => unreachable!(),
+        }
     }
 }

@@ -56,10 +56,13 @@ pub trait NodeTrait {
     ) -> Result<()>;
 }
 
+
+//ItemId here is identifying one unit of logical work. For retries and something else, where the same unit of logical work is coming in, the id needs to be the same.
+//Similarly, every unique unit of logical work should have its own unique ItemId. We leave it to the caller to decide this.
 #[derive(Debug, Clone)]
-pub struct Outbox<PeerId, ItemId, Payload, MessageId> {
-    queued: HashMap<PeerId, HashMap<ItemId, Payload>>,
-    in_flight: HashMap<MessageId, InFlightBatch<PeerId, ItemId>>,
+pub struct Outbox<NodeId, ItemId, Payload, MessageId> {
+    queued: HashMap<NodeId, HashMap<ItemId, Payload>>,
+    in_flight: HashMap<MessageId, InFlightBatch<NodeId, ItemId>>,
 }
 
 impl<P, I, V, M> Default for Outbox<P, I, V, M>
@@ -78,15 +81,15 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct InFlightBatch<PeerId, ItemId> {
-    peer: PeerId,
+pub struct InFlightBatch<NodeId, ItemId> {
+    peer: NodeId,
     item_ids: Vec<ItemId>,
     sent_at: Instant,
 }
 
-pub struct OutgoingBatch<PeerId, ItemId, Payload, MessageId> {
+pub struct OutgoingBatch<NodeId, ItemId, Payload, MessageId> {
     pub message_id: MessageId,
-    pub peer: PeerId,
+    pub peer: NodeId,
     pub items: Vec<(ItemId, Payload)>,
 }
 
