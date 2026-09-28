@@ -57,10 +57,16 @@ pub trait NodeTrait {
 }
 
 
-//ItemId here is identifying one unit of logical work. For retries and something else, where the same unit of logical work is coming in, the id needs to be the same.
-//Similarly, every unique unit of logical work should have its own unique ItemId. We leave it to the caller to decide this.
+//State keeper for tracking the messages a node has to gossip out
+// with checks for messages we are currently waiting
 #[derive(Debug, Clone)]
-pub struct Outbox<NodeId, ItemId, Payload, MessageId> {
+pub struct Outbox<
+    NodeId,
+    //ItemId here is identifying one unit of logical work. For retries and something else, where the same unit of logical work is coming in, the id needs to be the same.
+    //Similarly, every unique unit of logical work should have its own unique ItemId. We leave it to the caller to decide this.
+    ItemId,
+    Payload, 
+    MessageId> {
     queued: HashMap<NodeId, HashMap<ItemId, Payload>>,
     in_flight: HashMap<MessageId, InFlightBatch<NodeId, ItemId>>,
 }
@@ -108,11 +114,17 @@ where
             .or_insert(payload);
     }
 
-    pub fn prepare_batches(
+    /// Expire timed-out attempts and reserve batches ready to send.
+    /// The caller must send each batch or release it with `mark_send_failed`.
+    pub fn poll(
         &mut self,
         now: Instant,
+        timeout: Duration,
         mut next_message_id: impl FnMut() -> M,
     ) -> Vec<OutgoingBatch<P, I, V, M>> {
+        self.in_flight
+            .retain(|_, batch| now.saturating_duration_since(batch.sent_at) < timeout);
+
         let eligible_peers: Vec<P> = self
             .queued
             .iter()
@@ -171,14 +183,6 @@ where
         self.in_flight.remove(message_id).is_some()
     }
 
-    pub fn expire_in_flight(&mut self, now: Instant, timeout: Duration) -> usize {
-        let previous_count = self.in_flight.len();
-
-        self.in_flight
-            .retain(|_, batch| now.saturating_duration_since(batch.sent_at) < timeout);
-
-        previous_count - self.in_flight.len()
-    }
     fn has_in_flight_for(&self, peer: &P) -> bool {
         self.in_flight.values().any(|batch| &batch.peer == peer)
     }
@@ -189,6 +193,8 @@ mod tests {
     use super::Outbox;
     use std::time::{Duration, Instant};
 
+    const TIMEOUT: Duration = Duration::from_millis(300);
+
     type TestOutbox = Outbox<&'static str, u32, &'static str, u32>;
 
     #[test]
@@ -197,31 +203,31 @@ mod tests {
         outbox.enqueue("n2", 1, "first");
         outbox.enqueue("n2", 1, "replacement");
 
-        let batches = outbox.prepare_batches(Instant::now(), || 10);
+        let batches = outbox.poll(Instant::now(), TIMEOUT, || 10);
 
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].items, vec![(1, "first")]);
     }
 
     #[test]
-    fn prepare_batches_allows_only_one_in_flight_batch_per_peer() {
+    fn poll_allows_only_one_in_flight_batch_per_peer() {
         let mut outbox = TestOutbox::default();
         outbox.enqueue("n2", 1, "one");
 
-        assert_eq!(outbox.prepare_batches(Instant::now(), || 10).len(), 1);
+        assert_eq!(outbox.poll(Instant::now(), TIMEOUT, || 10).len(), 1);
         outbox.enqueue("n2", 2, "two");
-        assert!(outbox.prepare_batches(Instant::now(), || 11).is_empty());
+        assert!(outbox.poll(Instant::now(), TIMEOUT, || 11).is_empty());
     }
 
     #[test]
     fn acknowledge_removes_only_items_in_the_acknowledged_batch() {
         let mut outbox = TestOutbox::default();
         outbox.enqueue("n2", 1, "one");
-        outbox.prepare_batches(Instant::now(), || 10);
+        outbox.poll(Instant::now(), TIMEOUT, || 10);
         outbox.enqueue("n2", 2, "two");
 
         assert!(outbox.acknowledge(&10));
-        let batches = outbox.prepare_batches(Instant::now(), || 11);
+        let batches = outbox.poll(Instant::now(), TIMEOUT, || 11);
 
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].items, vec![(2, "two")]);
@@ -233,7 +239,7 @@ mod tests {
         outbox.enqueue("n2", 1, "one");
 
         assert!(!outbox.acknowledge(&99));
-        assert_eq!(outbox.prepare_batches(Instant::now(), || 10).len(), 1);
+        assert_eq!(outbox.poll(Instant::now(), TIMEOUT, || 10).len(), 1);
     }
 
     #[test]
@@ -241,16 +247,14 @@ mod tests {
         let mut outbox = TestOutbox::default();
         let sent_at = Instant::now();
         outbox.enqueue("n2", 1, "one");
-        outbox.prepare_batches(sent_at, || 10);
+        outbox.poll(sent_at, TIMEOUT, || 10);
 
-        assert_eq!(
-            outbox.expire_in_flight(
-                sent_at + Duration::from_millis(301),
-                Duration::from_millis(300)
-            ),
-            1
-        );
-        let retried = outbox.prepare_batches(sent_at + Duration::from_millis(301), || 11);
+        assert!(outbox
+            .poll(sent_at + Duration::from_millis(299), TIMEOUT, || 11)
+            .is_empty());
+        let retried = outbox.poll(sent_at + TIMEOUT, TIMEOUT, || 11);
+        // A late acknowledgement must not remove the new attempt's items.
+        assert!(!outbox.acknowledge(&10));
         assert_eq!(retried.len(), 1);
         assert_eq!(retried[0].message_id, 11);
         assert_eq!(retried[0].items, vec![(1, "one")]);
@@ -260,10 +264,10 @@ mod tests {
     fn send_failure_releases_batch_for_retry() {
         let mut outbox = TestOutbox::default();
         outbox.enqueue("n2", 1, "one");
-        outbox.prepare_batches(Instant::now(), || 10);
+        outbox.poll(Instant::now(), TIMEOUT, || 10);
 
         assert!(outbox.mark_send_failed(&10));
-        let retried = outbox.prepare_batches(Instant::now(), || 11);
+        let retried = outbox.poll(Instant::now(), TIMEOUT, || 11);
         assert_eq!(retried.len(), 1);
         assert_eq!(retried[0].message_id, 11);
     }

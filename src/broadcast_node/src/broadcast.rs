@@ -256,9 +256,6 @@ pub fn retry_messages<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Resul
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
-    node.outbox
-        .expire_in_flight(Instant::now(), GOSSIP_ACK_TIMEOUT);
-
     send_ready_batches(node, tx)
 }
 
@@ -274,9 +271,11 @@ fn send_ready_batches<Data>(node: &mut Node<Data>, tx: Sender<Message>) -> Resul
 where
     Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
 {
-    let batches = node
-        .outbox
-        .prepare_batches(Instant::now(), crate::unique_id::generate_message_id);
+    let batches = node.outbox.poll(
+        Instant::now(),
+        GOSSIP_ACK_TIMEOUT,
+        crate::unique_id::generate_message_id,
+    );
     for batch in batches {
         let message_id = batch.message_id;
 

@@ -19,22 +19,21 @@ pub struct Node<Data> {
     pub outbox: GCounterOutBox,
 }
 
-pub struct IdempotentDispatchFromOutBox {
-    //node that the message is supposed to go for
-    pub owner: String,
-    pub value: u64,
-}
+// pub struct IdempotentDispatchFromOutBox {
+//     ///Node that the message is supposed to go for
+//     pub owner: String,
+//     pub value: u64,
+// }
 
 impl<Data> Node<Data> {
-    /// Workload implementation is pending.
     pub fn handle_read_message(&mut self, _msg: Message, _tx: Sender<Message>) -> Result<()> {
         anyhow::bail!("G-counter read handler is not implemented")
     }
-    /// Workload implementation is pending.
+
     pub fn handle_add_message(&mut self, _msg: Message, _tx: Sender<Message>) -> Result<()> {
         anyhow::bail!("G-counter add handler is not implemented")
     }
-    /// Workload implementation is pending.
+
     pub fn fanout_messages(&mut self, _tx: Sender<Message>) -> Result<()> {
         anyhow::bail!("G-counter fanout is not implemented")
     }
