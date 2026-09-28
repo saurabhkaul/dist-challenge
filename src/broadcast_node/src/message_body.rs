@@ -60,15 +60,6 @@ pub enum MessageBody {
         echo: String,
     },
     // Custom messages not part of the protocol.
-    sync {
-        msg_id: u32,
-        messages: Vec<u32>,
-    },
-    sync_ok {
-        msg_id: u32,
-        in_reply_to: u32,
-        messages: Vec<u32>,
-    },
     gossip {
         msg_id: u32,
         messages: Vec<u32>,

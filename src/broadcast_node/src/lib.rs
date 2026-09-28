@@ -128,18 +128,6 @@ where
         broadcast::handle_topology_message(self, msg, tx)
     }
 
-    pub fn handle_sync_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        broadcast::handle_sync_message(self, msg, tx)
-    }
-
-    pub fn handle_sync_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
-        broadcast::handle_sync_ok_message(self, msg, tx)
-    }
-
-    pub fn request_sync_with_random_peers(&mut self) -> Vec<Message> {
-        broadcast::request_sync_with_random_peers(self)
-    }
-
     pub fn handle_broadcast_ok_message(&mut self, msg: Message, tx: Sender<Message>) -> Result<()> {
         broadcast::handle_broadcast_ok_message(self, msg, tx)
     }
@@ -160,8 +148,6 @@ where
             MessageBody::topology { .. } => self.handle_topology_message(msg, tx),
             MessageBody::read { .. } => self.handle_read_message(msg, tx),
             MessageBody::broadcast_ok { .. } => self.handle_broadcast_ok_message(msg, tx),
-            MessageBody::sync { .. } => self.handle_sync_message(msg, tx),
-            MessageBody::sync_ok { .. } => self.handle_sync_ok_message(msg, tx),
             MessageBody::gossip { .. } => self.handle_gossip_message(msg, tx),
             MessageBody::gossip_ok { .. } => self.handle_gossip_ok_message(msg, tx),
             MessageBody::init_ok { .. }

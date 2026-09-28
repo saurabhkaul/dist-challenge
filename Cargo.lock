@@ -86,7 +86,6 @@ dependencies = [
  "futures",
  "log",
  "node_common",
- "rand",
  "serde",
  "serde_derive",
  "serde_json",

@@ -1,7 +1,5 @@
 use crate::{Message, MessageBody, Node, NodeTrait};
 use anyhow::Result;
-use rand::seq::IndexedRandom;
-use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -94,88 +92,6 @@ where
         reply.send(tx)?;
     }
     Ok(())
-}
-
-pub fn handle_sync_message<Data>(
-    node: &mut Node<Data>,
-    msg: Message,
-    tx: Sender<Message>,
-) -> Result<()>
-where
-    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-{
-    if let MessageBody::sync {
-        msg_id,
-        ref messages,
-    } = msg.body
-    {
-        let messages: HashSet<Data> = messages.into_iter().map(|m| Data::from(*m)).collect();
-        let i_have: HashSet<Data> = node.store.difference(&messages).cloned().collect();
-        let they_have: HashSet<Data> = messages.difference(&node.store).cloned().collect();
-
-        let i_have: Vec<u32> = i_have.into_iter().map(|m| Data::into(m)).collect();
-        //insert the data we dont have
-        for data in they_have {
-            node.store.insert(data);
-        }
-        //send back the data they dont have
-        let payload = MessageBody::sync_ok {
-            msg_id: node.get_and_increment_msg_id(),
-            in_reply_to: msg_id,
-            messages: i_have,
-        };
-        let reply = msg.into_reply(payload);
-        reply.send(tx)?;
-    }
-    Ok(())
-}
-
-pub fn handle_sync_ok_message<Data>(
-    node: &mut Node<Data>,
-    msg: Message,
-    _tx: Sender<Message>,
-) -> Result<()>
-where
-    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-{
-    if let MessageBody::sync_ok {
-        msg_id: _,
-        in_reply_to: _,
-        messages,
-    } = msg.body
-    {
-        //We might have received data we didn't have the the syncing node has
-        //So we simply insert this new data and dont send any acknowledgement
-        for m in messages {
-            node.store.insert(Data::from(m));
-        }
-    }
-    Ok(())
-}
-
-// To combat network partitions, a node calls this function to pick random
-// nodes for their messages,while it sends its own. Once we get theirs we can
-// copy values we dont have, while they can copy values from us
-// This function acts as a initiator for the sync process, piggybacking on
-// maelstroms messaging protocol, by injecting custom message types.
-pub fn request_sync_with_random_peers<Data>(node: &mut Node<Data>) -> Vec<Message>
-where
-    Data: PartialEq + Clone + Copy + From<u32> + Into<u32> + Hash + Eq,
-{
-    let all_nodes: Vec<String> = node.node_ids.clone();
-    let mut rng = rand::rng();
-    let messages = all_nodes
-        .choose_multiple(&mut rng, 2)
-        .map(|node_id| Message {
-            src: node.id.clone(),
-            dest: node_id.to_owned(),
-            body: MessageBody::sync {
-                msg_id: node.get_and_increment_msg_id(),
-                messages: node.read(),
-            },
-        })
-        .collect();
-    messages
 }
 
 pub fn handle_broadcast_ok_message<Data>(
